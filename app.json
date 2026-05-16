@@ -1,29 +1,53 @@
 {
   "expo": {
-    "name": "bovisense",
+    "name": "BoviSense",
     "slug": "bovisense",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "scheme": "bovisense",
+    "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0D1B0F"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "fr.bovisense.app",
+      "config": {
+        "googleMapsApiKey": "VOTRE_GOOGLE_MAPS_IOS_KEY"
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#0D1B0F"
+      },
+      "package": "fr.bovisense.app",
+      "config": {
+        "googleMaps": {
+          "apiKey": "VOTRE_GOOGLE_MAPS_ANDROID_KEY"
+        }
       },
       "edgeToEdgeEnabled": true
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "BoviSense a besoin de la caméra pour scanner les QR codes des colliers."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
     }
   }
 }

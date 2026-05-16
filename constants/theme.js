@@ -1,0 +1,113 @@
+import { StyleSheet, Platform } from 'react-native';
+import { COULEURS } from './couleurs';
+
+export const OMBRES = {
+  petite: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  moyenne: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+};
+
+export const STYLES_COMMUNS = StyleSheet.create({
+  fond: {
+    flex: 1,
+    backgroundColor: COULEURS.FOND_PRINCIPAL,
+  },
+  card: {
+    backgroundColor: COULEURS.FOND_CARD,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  boutonPrimaire: {
+    backgroundColor: COULEURS.VERT_PRINCIPAL,
+    borderRadius: 8,
+    height: 52,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexDirection: 'row',
+  },
+  boutonPrimaireTexte: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  boutonOutlineVert: {
+    borderWidth: 2,
+    borderColor: COULEURS.VERT_PRINCIPAL,
+    borderRadius: 8,
+    height: 52,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+  },
+  boutonOutlineVertTexte: {
+    color: COULEURS.VERT_PRINCIPAL,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  boutonOutlineRouge: {
+    borderWidth: 2,
+    borderColor: COULEURS.ROUGE_URGENCE,
+    borderRadius: 8,
+    height: 52,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  boutonOutlineRougeTexte: {
+    color: COULEURS.ROUGE_URGENCE,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  input: {
+    backgroundColor: COULEURS.FOND_INPUT,
+    borderWidth: 1,
+    borderColor: COULEURS.SEPARATEUR,
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    color: COULEURS.TEXTE_PRINCIPAL,
+    minHeight: 52,
+  },
+  sectionTitre: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COULEURS.TEXTE_PRINCIPAL,
+    marginBottom: 12,
+    marginTop: 8,
+  },
+  entete: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 52 : 40,
+    paddingBottom: 14,
+    backgroundColor: COULEURS.FOND_CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: COULEURS.SEPARATEUR,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+});
