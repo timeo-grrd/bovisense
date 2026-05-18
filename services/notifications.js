@@ -9,16 +9,23 @@ Notifications.setNotificationHandler({
   }),
 });
 
-export async function enregistrerNotifications() {
+async function creerChannelAndroid() {
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('bovisense', {
       name: 'Alertes BoviSense',
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
-      lightColor: '#C0392B',
       sound: 'default',
+      enableVibrate: true,
+      showBadge: true,
+      enableLights: true,
+      lightColor: '#C0392B',
     });
   }
+}
+
+export async function enregistrerNotifications() {
+  await creerChannelAndroid();
   const { status } = await Notifications.requestPermissionsAsync();
   console.log('Permission notifications:', status);
   if (status === 'granted') {
@@ -58,6 +65,7 @@ export async function envoyerNotificationUrgence(nomVache, etat) {
   if (!config) return;
 
   try {
+    await creerChannelAndroid();
     await Notifications.scheduleNotificationAsync({
       content: {
         title: config.titre,

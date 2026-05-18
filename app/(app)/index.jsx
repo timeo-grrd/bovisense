@@ -24,10 +24,11 @@ import BanniereHorsLigne from '../../components/BanniereHorsLigne';
 import Toast from '../../components/Toast';
 
 const REGION_DEFAUT = { latitude: 48.0712, longitude: -1.6325, latitudeDelta: 0.025, longitudeDelta: 0.025 };
-const ETATS_CRITIQUES = ['Chute', 'Boiterie_Severe', 'Boiterie_Legere', 'Chaleurs'];
+const ETATS_URGENTS = ['Chute', 'Boiterie_Severe', 'En chaleur'];
 
 export default function HomeScreen() {
   const [colliers, setColliers]                 = useState([]);
+  const [profil, setProfil]                     = useState(null);
   const [chargement, setChargement]             = useState(true);
   const [analyse, setAnalyse]                   = useState(false);
   const [erreur, setErreur]                     = useState(null);
@@ -42,14 +43,14 @@ export default function HomeScreen() {
   const { estConnecte, estConnectePrecedentRef } = useConnexion();
   const estConnecteRef = useRef(estConnecte);
   estConnecteRef.current = estConnecte;
-  const scrollRef  = useRef(null);
-  const pulseAnim  = useRef(new Animated.Value(1)).current;
+  const scrollRef = useRef(null);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 0.2, duration: 600, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1,   duration: 600, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 0.15, duration: 600, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1,    duration: 600, useNativeDriver: true }),
       ])
     ).start();
   }, [pulseAnim]);
@@ -79,6 +80,7 @@ export default function HomeScreen() {
         const vachesNormalisees = (coliersData ?? []).map(v => ({
           ...v, etat_sante: normaliserEtat(v.etat_sante),
         }));
+        setProfil(profilData);
         setColliers(vachesNormalisees);
         await sauvegarderVaches(vachesNormalisees);
         console.log('=== CACHE SAUVEGARDÉ ===', vachesNormalisees.length, 'vaches');
@@ -86,7 +88,6 @@ export default function HomeScreen() {
       } else {
         console.log('=== MODE HORS LIGNE ===');
         const cache = await chargerVachesCache();
-        console.log('Cache chargé:', cache.vaches.length, 'vaches');
         if (cache.vaches.length > 0) {
           setColliers(cache.vaches);
           if (cache.dateMaj) setDateMaj(cache.dateMaj);
@@ -107,11 +108,26 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(() => {
-      chargerDonnees();
-    });
+    const task = InteractionManager.runAfterInteractions(() => { chargerDonnees(); });
     return () => task.cancel();
   }, [chargerDonnees]);
+
+  useEffect(() => {
+    const chargerProfil = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          const { data } = await supabase
+            .from('profiles')
+            .select('prenom, nom')
+            .eq('id', session.user.id)
+            .single();
+          if (data) setProfil(data);
+        }
+      } catch {}
+    };
+    chargerProfil();
+  }, []);
 
   useEffect(() => {
     AsyncStorage.getItem('bovisense_derniere_actu').then(val => {
@@ -179,7 +195,7 @@ export default function HomeScreen() {
 
   const actualiser = useCallback(async () => {
     if (!estConnecteRef.current) {
-      Alert.alert('Hors ligne', 'La connexion internet est nécessaire pour analyser les vaches via l\'IA.');
+      Alert.alert('Hors ligne', "La connexion internet est nécessaire pour analyser les vaches via l'IA.");
       return;
     }
     if (analyse || colliers.length === 0) return;
@@ -190,8 +206,9 @@ export default function HomeScreen() {
       const resultats  = await analyserTroupeau(colliers);
       for (const vache of resultats) {
         const etatAvant = etatsAvant.get(vache.id);
-        if (ETATS_CRITIQUES.includes(vache.etat_sante) && etatAvant !== vache.etat_sante) {
-          envoyerNotificationUrgence(vache.id_vache, vache.etat_sante).catch(() => {});
+        const etatApres = normaliserEtat(vache.etat_sante);
+        if (ETATS_URGENTS.includes(etatApres) && etatAvant !== etatApres) {
+          await envoyerNotificationUrgence(vache.id_vache, etatApres);
         }
       }
       setColliers(resultats);
@@ -199,7 +216,7 @@ export default function HomeScreen() {
       setDerniereActu(maintenant);
       await AsyncStorage.setItem('bovisense_derniere_actu', maintenant.toISOString());
     } catch {
-      setErreur('Erreur lors de l\'analyse IA. Vérifiez votre connexion.');
+      setErreur("Erreur lors de l'analyse IA. Vérifiez votre connexion.");
     } finally {
       setAnalyse(false);
     }
@@ -227,10 +244,6 @@ export default function HomeScreen() {
       .slice(0, 5),
   [colliers]);
 
-  const allerSurCarte = (vache) => {
-    router.push({ pathname: '/(app)/map', params: { focusId: vache.id } });
-  };
-
   const regionCarte = useMemo(() => {
     const valides = colliers.filter(c => c.latitude && c.longitude);
     if (valides.length > 0) {
@@ -244,6 +257,10 @@ export default function HomeScreen() {
     return REGION_DEFAUT;
   }, [colliers]);
 
+  const allerSurCarte = (vache) => {
+    router.push({ pathname: '/(app)/map', params: { focusId: vache.id } });
+  };
+
   if (chargement) {
     return (
       <View style={styles.centrer}>
@@ -254,30 +271,39 @@ export default function HomeScreen() {
     );
   }
 
+  const labelDerniereActu = derniereActu
+    ? new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' }).format(derniereActu)
+    : null;
+
   return (
     <View style={styles.fond}>
-      <StatusBar barStyle="dark-content" backgroundColor={COULEURS.FOND_CARD} />
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
 
-      {/* ── En-tête : logo gauche + météo compacte droite ── */}
+      {/* ── Header 2 lignes ── */}
       <View style={styles.entete}>
-        <View style={styles.enteteGauche}>
-          <Image
-            source={require('../../assets/logo_bovi_sense_clair.png')}
-            style={styles.enteteLogoImg}
-            resizeMode="contain"
-          />
-          <Text style={styles.enteteTitre}>BOVISENSE</Text>
+        <View style={styles.enteteL1}>
+          <View style={styles.enteteGauche}>
+            <Image
+              source={require('../../assets/logo_bovi_sense_clair.png')}
+              style={styles.enteteLogoImg}
+              resizeMode="contain"
+            />
+            <Text style={styles.enteteTitre}>BoviSense</Text>
+          </View>
+          {meteo && (
+            <TouchableOpacity
+              style={styles.meteoBadge}
+              onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.meteoBadgeIcone}>{iconeMeteo(meteo.weathercode)}</Text>
+              <Text style={styles.meteoBadgeTemp}>{meteo.temperature}°C</Text>
+            </TouchableOpacity>
+          )}
         </View>
-        {meteo && (
-          <TouchableOpacity
-            style={styles.meteoCompact}
-            onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.meteoCompactIcone}>{iconeMeteo(meteo.weathercode)}</Text>
-            <Text style={styles.meteoCompactTemp}>{meteo.temperature}°C</Text>
-          </TouchableOpacity>
-        )}
+        <Text style={styles.enteteBonjour}>
+          Bonjour, {profil?.prenom ?? 'Éleveur'} 👋
+        </Text>
       </View>
 
       <BanniereHorsLigne visible={!estConnecte} />
@@ -285,7 +311,7 @@ export default function HomeScreen() {
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
-        contentContainerStyle={[styles.scrollContenu, { paddingBottom: 88 }]}
+        contentContainerStyle={[styles.scrollContenu, { paddingBottom: 96 }]}
         refreshControl={
           <RefreshControl
             refreshing={rafraichissement}
@@ -299,60 +325,51 @@ export default function HomeScreen() {
         {/* ── Widget météo ── */}
         {meteo && (
           <View style={styles.meteoWidget}>
-            <Text style={styles.meteoIcone}>{iconeMeteo(meteo.weathercode)}</Text>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.meteoTemp}>{meteo.temperature}°C</Text>
-              <Text style={styles.meteoLieu}>📍 {meteo.ville}</Text>
+            <View style={styles.meteoL1}>
+              <Text style={styles.meteoIconeGrande}>{iconeMeteo(meteo.weathercode)}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.meteoTempGrande}>{meteo.temperature}°C</Text>
+                <Text style={styles.meteoVille}>📍 {meteo.ville}</Text>
+              </View>
             </View>
-            <View style={styles.meteoDetails}>
-              <Text style={styles.meteoDetail}>💧 {meteo.humidite}%</Text>
-              <Text style={styles.meteoDetail}>💨 {meteo.vent} km/h</Text>
+            <View style={styles.meteoL2}>
+              <Text style={styles.meteoInfo}>💧 {meteo.humidite}%</Text>
+              <Text style={styles.meteoDivider}>|</Text>
+              <Text style={styles.meteoInfo}>💨 {meteo.vent} km/h</Text>
+              {labelDerniereActu && (
+                <>
+                  <Text style={styles.meteoDivider}>|</Text>
+                  <Text style={styles.meteoInfo}>🕐 {labelDerniereActu}</Text>
+                </>
+              )}
             </View>
           </View>
         )}
 
-        {/* ── Dernière analyse IA ── */}
-        <View style={styles.derniereActu}>
-          <Ionicons name="time-outline" size={14} color="#666" />
-          <Text style={styles.derniereActuTexte}>
-            {derniereActu
-              ? `Dernière analyse IA : ${new Intl.DateTimeFormat('fr-FR', {
-                  day: '2-digit', month: '2-digit',
-                  hour: '2-digit', minute: '2-digit',
-                }).format(derniereActu)}`
-              : 'Aucune analyse IA effectuée'}
-          </Text>
-        </View>
-
-        {/* ── Bannières urgence (max 3) avec pulse ── */}
-        {vachesUrgence.slice(0, 3).map(vache => (
-          <TouchableOpacity
-            key={vache.id}
-            style={styles.banniereUrgence}
-            onPress={() => allerSurCarte(vache)}
-            activeOpacity={0.85}
-          >
-            <Animated.View style={[styles.bannierePulse, { opacity: pulseAnim }]} />
-            <View style={styles.banniereUrgenceHeader}>
-              <Ionicons name="warning" size={20} color="#FFD700" />
-              <Text style={styles.banniereUrgenceTexte}>
-                🚨 Urgence vitale : Vache {vache.id_vache} immobilisée
-              </Text>
+        {/* ── Bannières urgence (max 2) ── */}
+        {vachesUrgence.slice(0, 2).map(vache => (
+          <View key={vache.id} style={styles.banniereUrgence}>
+            <Animated.View style={[styles.banniereBord, { opacity: pulseAnim }]} />
+            <View style={styles.banniereContenu}>
+              <Text style={styles.banniereId}>🚨 {vache.id_vache}</Text>
+              <View style={styles.banniereEtatBadge}>
+                <Text style={styles.banniereEtatTexte}>{libelleEtat(vache.etat_sante)}</Text>
+              </View>
+              <Text style={styles.banniereDescription}>Chute détectée — intervention requise</Text>
             </View>
-            <Text style={styles.banniereUrgenceSous}>
-              Fiabilité IA : {vache.fiabilite_ia != null
-                ? Math.round(vache.fiabilite_ia > 1 ? vache.fiabilite_ia : vache.fiabilite_ia * 100) + '%'
-                : 'N/A'}
-            </Text>
-            <View style={styles.banniereUrgenceBouton}>
-              <Text style={styles.banniereUrgenceBoutonTexte}>📍 VOIR SUR LA CARTE</Text>
-            </View>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.boutonLocaliser}
+              onPress={() => allerSurCarte(vache)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.boutonLocaliserTexte}>Localiser →</Text>
+            </TouchableOpacity>
+          </View>
         ))}
-        {vachesUrgence.length > 3 && (
+        {vachesUrgence.length > 2 && (
           <View style={styles.banniereResume}>
             <Text style={styles.banniereResumeTexte}>
-              ⚠️ {vachesUrgence.length} vaches en urgence au total
+              ⚠️ +{vachesUrgence.length - 2} autre{vachesUrgence.length - 2 > 1 ? 's' : ''} urgence{vachesUrgence.length - 2 > 1 ? 's' : ''}
             </Text>
           </View>
         )}
@@ -371,16 +388,23 @@ export default function HomeScreen() {
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.statsScroll}
         >
-          <StatCard couleur={couleurEtat('Saine')}           label="Saines"   nombre={stats.saines}           />
-          <StatCard couleur={couleurEtat('Boiterie_Legere')} label="Légère"   nombre={stats.boiteriesLegeres} />
-          <StatCard couleur={couleurEtat('Boiterie_Severe')} label="Sévère"   nombre={stats.boiteriesSeveres} />
-          <StatCard couleur={couleurEtat('En chaleur')}      label="Chaleurs" nombre={stats.chaleurs}         />
-          <StatCard couleur={couleurEtat('Chute')}           label="Urgences" nombre={stats.urgences}         />
+          {[
+            { label: 'Saines',            count: stats.saines,           couleur: '#2D5016', bg: '#F0F7F0' },
+            { label: 'Chaleurs',          count: stats.chaleurs,         couleur: '#E9C46A', bg: '#FFFBF0' },
+            { label: 'Boiterie\nlégère',  count: stats.boiteriesLegeres, couleur: '#F4A261', bg: '#FFF8F0' },
+            { label: 'Boiterie\nsévère',  count: stats.boiteriesSeveres, couleur: '#E67E22', bg: '#FFF5EC' },
+            { label: 'Urgences',          count: stats.urgences,         couleur: '#C0392B', bg: '#FFF0F0' },
+          ].map(stat => (
+            <View key={stat.label} style={[styles.statCard, { backgroundColor: stat.bg, borderLeftColor: stat.couleur }]}>
+              <Text style={[styles.statNombre, { color: stat.couleur }]}>{stat.count}</Text>
+              <Text style={styles.statLabel}>{stat.label}</Text>
+            </View>
+          ))}
         </ScrollView>
 
-        {/* ── Dernières alertes ── */}
+        {/* ── Alertes récentes ── */}
         <View style={styles.sectionTitreRow}>
-          <Text style={styles.sectionTitre}>Dernières alertes</Text>
+          <Text style={styles.sectionTitre}>⚡ Alertes récentes</Text>
           {dernieresAlertes.length > 0 && (
             <View style={styles.badgeCount}>
               <Text style={styles.badgeCountTexte}>{dernieresAlertes.length}</Text>
@@ -398,7 +422,7 @@ export default function HomeScreen() {
             <TouchableOpacity
               key={vache.id}
               style={styles.carteAlerte}
-              onPress={() => allerSurCarte(vache)}
+              onPress={() => router.push({ pathname: '/(app)/historique', params: { id: vache.id, nom: vache.id_vache } })}
               activeOpacity={0.8}
             >
               <View style={[styles.bandeLaterale, { backgroundColor: couleurEtat(vache.etat_sante) }]} />
@@ -411,20 +435,13 @@ export default function HomeScreen() {
                   </View>
                 </View>
                 <Text style={styles.carteAlerteDate}>{tempsRelatif(vache.derniere_maj)}</Text>
-                <TouchableOpacity
-                  onPress={() => router.push({ pathname: '/(app)/historique', params: { id: vache.id, nom: vache.id_vache } })}
-                  activeOpacity={0.7}
-                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                >
-                  <Text style={styles.lienHistorique}>Voir historique →</Text>
-                </TouchableOpacity>
               </View>
               <Ionicons name="chevron-forward" size={18} color={COULEURS.TEXTE_SECONDAIRE} />
             </TouchableOpacity>
           ))
         )}
 
-        {/* ── Localisation (mini carte) ── */}
+        {/* ── Mini carte 140px ── */}
         {colliers.length > 0 && (
           <>
             <Text style={styles.sectionTitre}>Localisation</Text>
@@ -455,6 +472,9 @@ export default function HomeScreen() {
                       </Marker>
                     ))}
                 </MapView>
+                <View style={styles.miniCarteOverlay}>
+                  <Text style={styles.miniCarteOverlayTexte}>Voir la carte complète →</Text>
+                </View>
               </View>
             </TouchableOpacity>
           </>
@@ -506,12 +526,12 @@ export default function HomeScreen() {
           {analyse ? (
             <View style={styles.boutonContenu}>
               <ActivityIndicator color="#FFF" size="small" />
-              <Text style={[styles.boutonTexte, { marginLeft: 10 }]}>Analyse IA en cours…</Text>
+              <Text style={[styles.boutonTexte, { marginLeft: 10 }]}>Analyse en cours…</Text>
             </View>
           ) : (
             <View style={styles.boutonContenu}>
-              <Ionicons name="refresh" size={20} color="#FFF" />
-              <Text style={[styles.boutonTexte, { marginLeft: 8 }]}>Actualiser via IA Azure</Text>
+              <Text style={{ fontSize: 16, marginRight: 8 }}>🔄</Text>
+              <Text style={styles.boutonTexte}>Actualiser via IA</Text>
             </View>
           )}
         </TouchableOpacity>
@@ -544,113 +564,127 @@ function MiniMarqueur({ couleur }) {
   );
 }
 
-function StatCard({ couleur, label, nombre }) {
-  return (
-    <View style={styles.statCard}>
-      <View style={[styles.statRond, { backgroundColor: couleur }]} />
-      <Text style={styles.statNombre}>{nombre}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   fond:    { flex: 1, backgroundColor: COULEURS.FOND_PRINCIPAL },
   centrer: { flex: 1, backgroundColor: COULEURS.FOND_PRINCIPAL, justifyContent: 'center', alignItems: 'center' },
   texteChargement: { color: COULEURS.TEXTE_SECONDAIRE, marginTop: 12, fontSize: 15 },
 
-  // En-tête 60px visible + barre de statut
+  // ── Header 2 lignes ──
   entete: {
-    flexDirection:    'row',
-    alignItems:       'center',
-    justifyContent:   'space-between',
+    backgroundColor:   '#FFFFFF',
     paddingHorizontal: 16,
-    paddingTop:       Platform.OS === 'ios' ? 52 : 36,
-    paddingBottom:    10,
-    backgroundColor:  COULEURS.FOND_CARD,
+    paddingTop:        Platform.OS === 'ios' ? 52 : 36,
+    paddingBottom:     12,
     borderBottomWidth: 1,
     borderBottomColor: COULEURS.SEPARATEUR,
-    shadowColor:      '#000',
-    shadowOffset:     { width: 0, height: 1 },
-    shadowOpacity:    0.06,
-    shadowRadius:     3,
-    elevation:        2,
+    shadowColor:       '#000',
+    shadowOffset:      { width: 0, height: 1 },
+    shadowOpacity:     0.06,
+    shadowRadius:      3,
+    elevation:         2,
   },
-  enteteGauche:  { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  enteteL1: {
+    flexDirection:  'row',
+    alignItems:     'center',
+    justifyContent: 'space-between',
+    marginBottom:   4,
+  },
+  enteteGauche:  { flexDirection: 'row', alignItems: 'center', gap: 8 },
   enteteLogoImg: { width: 32, height: 32 },
-  enteteTitre:   { fontSize: 18, fontWeight: '800', color: COULEURS.TEXTE_PRINCIPAL, letterSpacing: 2 },
-
-  meteoCompact: {
+  enteteTitre: {
+    fontSize:   20,
+    fontWeight: '800',
+    color:      COULEURS.VERT_PRINCIPAL,
+    letterSpacing: 0.5,
+  },
+  enteteBonjour: {
+    fontSize:  14,
+    color:     COULEURS.TEXTE_SECONDAIRE,
+    fontWeight: '500',
+    marginTop:  2,
+  },
+  meteoBadge: {
     flexDirection:   'row',
     alignItems:      'center',
     gap:             4,
-    backgroundColor: '#F5F5F5',
+    backgroundColor: '#F0F7F0',
     borderRadius:    20,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 10,
+    paddingVertical:   5,
   },
-  meteoCompactIcone: { fontSize: 18 },
-  meteoCompactTemp:  { fontSize: 15, fontWeight: '700', color: COULEURS.TEXTE_PRINCIPAL },
+  meteoBadgeIcone: { fontSize: 16 },
+  meteoBadgeTemp:  { fontSize: 14, fontWeight: '700', color: COULEURS.VERT_PRINCIPAL },
 
   scroll:        { flex: 1 },
   scrollContenu: { paddingHorizontal: 16, paddingTop: 16 },
 
-  // Widget météo principal
+  // ── Widget météo ──
   meteoWidget: {
+    backgroundColor: '#F0F7F0',
+    borderRadius:    16,
+    padding:         16,
+    marginBottom:    12,
+  },
+  meteoL1: {
+    flexDirection: 'row',
+    alignItems:    'center',
+    marginBottom:  10,
+  },
+  meteoIconeGrande: { fontSize: 48, marginRight: 14 },
+  meteoTempGrande:  { fontSize: 36, fontWeight: '800', color: COULEURS.TEXTE_PRINCIPAL },
+  meteoVille:       { fontSize: 13, color: COULEURS.TEXTE_SECONDAIRE, marginTop: 2 },
+  meteoL2: {
+    flexDirection: 'row',
+    alignItems:    'center',
+    gap:           8,
+  },
+  meteoInfo:    { fontSize: 13, color: COULEURS.TEXTE_SECONDAIRE, fontWeight: '500' },
+  meteoDivider: { color: COULEURS.SEPARATEUR, fontSize: 13 },
+
+  // ── Bannières urgence (blanc + bord rouge) ──
+  banniereUrgence: {
     backgroundColor: '#FFFFFF',
     borderRadius:    12,
-    padding:         16,
+    marginBottom:    10,
     flexDirection:   'row',
     alignItems:      'center',
-    justifyContent:  'space-between',
-    marginBottom:    8,
+    overflow:        'hidden',
     shadowColor:     '#000',
     shadowOffset:    { width: 0, height: 2 },
     shadowOpacity:   0.08,
     shadowRadius:    4,
     elevation:       2,
   },
-  meteoIcone:   { fontSize: 40, marginRight: 12 },
-  meteoTemp:    { fontSize: 28, fontWeight: '800', color: COULEURS.TEXTE_PRINCIPAL },
-  meteoLieu:    { fontSize: 12, color: COULEURS.TEXTE_SECONDAIRE, fontStyle: 'italic', marginTop: 2 },
-  meteoDetails: { alignItems: 'flex-end', gap: 4 },
-  meteoDetail:  { fontSize: 13, color: COULEURS.TEXTE_SECONDAIRE, fontWeight: '500' },
-
-  // Dernière actualisation IA
-  derniereActu: {
-    flexDirection: 'row',
-    alignItems:    'center',
-    gap:           4,
-    paddingHorizontal: 4,
-    marginBottom:  12,
-  },
-  derniereActuTexte: { fontSize: 12, color: '#666666', fontStyle: 'italic' },
-
-  // Bannières urgence avec pulse gauche
-  banniereUrgence: {
+  banniereBord: {
+    width:           5,
+    alignSelf:       'stretch',
     backgroundColor: COULEURS.ROUGE_URGENCE,
-    borderRadius:    12,
-    padding:         16,
+  },
+  banniereContenu:     { flex: 1, paddingHorizontal: 12, paddingVertical: 12 },
+  banniereId:          { fontSize: 15, fontWeight: '800', color: COULEURS.TEXTE_PRINCIPAL, marginBottom: 3 },
+  banniereEtatBadge:   { backgroundColor: COULEURS.ROUGE_URGENCE + '20', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2, alignSelf: 'flex-start', marginBottom: 4 },
+  banniereEtatTexte:   { fontSize: 11, color: COULEURS.ROUGE_URGENCE, fontWeight: '700' },
+  banniereDescription: { fontSize: 12, color: COULEURS.TEXTE_SECONDAIRE },
+  boutonLocaliser: {
+    backgroundColor: COULEURS.VERT_PRINCIPAL,
+    borderRadius:    8,
+    paddingHorizontal: 12,
+    paddingVertical:   8,
+    marginRight:       12,
+  },
+  boutonLocaliserTexte: { color: '#FFF', fontSize: 12, fontWeight: '700' },
+  banniereResume: {
+    backgroundColor: '#FFF0F0',
+    borderRadius:    8,
+    borderWidth:     1,
+    borderColor:     COULEURS.ROUGE_URGENCE + '40',
+    padding:         12,
     marginBottom:    12,
-    overflow:        'hidden',
+    alignItems:      'center',
   },
-  bannierePulse: {
-    position: 'absolute',
-    left:     0,
-    top:      0,
-    bottom:   0,
-    width:    6,
-    backgroundColor: '#FFD700',
-  },
-  banniereUrgenceHeader:     { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
-  banniereUrgenceTexte:      { color: '#FFFFFF', fontSize: 14, fontWeight: '800', flex: 1 },
-  banniereUrgenceSous:       { color: 'rgba(255,255,255,0.8)', fontSize: 13, marginBottom: 10 },
-  banniereUrgenceBouton:     { backgroundColor: 'rgba(0,0,0,0.25)', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
-  banniereUrgenceBoutonTexte:{ color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
-  banniereResume:             { backgroundColor: '#FF6B6B', borderRadius: 8, padding: 12, marginBottom: 16, alignItems: 'center' },
-  banniereResumeTexte:        { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+  banniereResumeTexte: { color: COULEURS.ROUGE_URGENCE, fontSize: 13, fontWeight: '700' },
 
-  // Erreur
+  // ── Erreur ──
   erreurBandeau: {
     backgroundColor: '#FEF3CD',
     borderRadius:    8,
@@ -661,7 +695,7 @@ const styles = StyleSheet.create({
   },
   erreurTexte: { color: '#7D4E00', fontSize: 13 },
 
-  // Titre de section
+  // ── Titres de section ──
   sectionTitre: {
     fontSize:   16,
     fontWeight: '700',
@@ -677,66 +711,59 @@ const styles = StyleSheet.create({
     marginTop:     6,
   },
   badgeCount: {
-    backgroundColor:  COULEURS.ROUGE_URGENCE,
-    borderRadius:     10,
-    minWidth:         20,
-    height:           20,
-    justifyContent:   'center',
-    alignItems:       'center',
+    backgroundColor:   COULEURS.ROUGE_URGENCE,
+    borderRadius:      10,
+    minWidth:          20,
+    height:            20,
+    justifyContent:    'center',
+    alignItems:        'center',
     paddingHorizontal: 6,
   },
   badgeCountTexte: { color: '#FFF', fontSize: 11, fontWeight: '800' },
 
-  // Stats horizontales
+  // ── Stats horizontales ──
   statsScroll: { paddingRight: 16, gap: 10, marginBottom: 16 },
   statCard: {
-    width:           100,
-    backgroundColor: COULEURS.FOND_CARD,
-    borderRadius:    12,
-    padding:         12,
-    alignItems:      'center',
-    shadowColor:     '#000',
-    shadowOffset:    { width: 0, height: 2 },
-    shadowOpacity:   0.08,
-    shadowRadius:    4,
-    elevation:       2,
+    borderRadius:   12,
+    padding:        14,
+    minWidth:       90,
+    alignItems:     'center',
+    borderLeftWidth: 3,
   },
-  statRond:   { width: 28, height: 28, borderRadius: 14, marginBottom: 6 },
-  statNombre: { fontSize: 22, fontWeight: '800', color: COULEURS.TEXTE_PRINCIPAL, marginBottom: 2 },
-  statLabel:  { fontSize: 11, color: COULEURS.TEXTE_SECONDAIRE, fontWeight: '500', textAlign: 'center' },
+  statNombre: { fontSize: 28, fontWeight: '800', marginBottom: 2 },
+  statLabel:  { fontSize: 11, color: '#666', textAlign: 'center', lineHeight: 15 },
 
-  // Troupeau sain
+  // ── Troupeau sain ──
   troupeauSain:      { alignItems: 'center', paddingVertical: 28 },
   troupeauSainTexte: { color: COULEURS.TEXTE_SECONDAIRE, fontSize: 16, fontWeight: '600' },
 
-  // Cartes alertes
+  // ── Cartes alertes ──
   carteAlerte: {
-    backgroundColor: COULEURS.FOND_CARD,
+    backgroundColor: '#FFFFFF',
     borderRadius:    12,
     marginBottom:    10,
     flexDirection:   'row',
     alignItems:      'center',
     overflow:        'hidden',
-    minHeight:       72,
+    minHeight:       64,
     shadowColor:     '#000',
     shadowOffset:    { width: 0, height: 1 },
     shadowOpacity:   0.06,
     shadowRadius:    3,
     elevation:       1,
   },
-  bandeLaterale:      { width: 5, alignSelf: 'stretch' },
-  carteAlerteContenu: { flex: 1, paddingHorizontal: 14, paddingVertical: 12 },
-  carteAlerteLigne:   { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 5 },
+  bandeLaterale:      { width: 4, alignSelf: 'stretch' },
+  carteAlerteContenu: { flex: 1, paddingHorizontal: 14, paddingVertical: 10 },
+  carteAlerteLigne:   { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 4 },
   carteAlerteId:      { color: COULEURS.TEXTE_PRINCIPAL, fontSize: 15, fontWeight: '700' },
   carteAlerteNom:     { color: COULEURS.TEXTE_SECONDAIRE, fontSize: 13 },
-  carteAlerteDate:    { color: COULEURS.TEXTE_SECONDAIRE, fontSize: 12, marginBottom: 4 },
-  lienHistorique:     { color: COULEURS.VERT_PRINCIPAL, fontSize: 12, fontWeight: '600' },
+  carteAlerteDate:    { color: COULEURS.TEXTE_SECONDAIRE, fontSize: 12 },
   badge:              { borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
   badgeTexte:         { color: '#FFF', fontSize: 11, fontWeight: '700' },
 
-  // Mini carte
+  // ── Mini carte 140px ──
   miniCarteContainer: {
-    height:       180,
+    height:       140,
     borderRadius: 12,
     overflow:     'hidden',
     marginBottom: 16,
@@ -746,29 +773,44 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation:    2,
   },
-  miniCarte: { flex: 1 },
-
-  // Liste troupeau
-  ligneVache: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    backgroundColor: COULEURS.FOND_CARD,
-    borderRadius:    10,
-    paddingVertical: 13,
+  miniCarte:        { flex: 1 },
+  miniCarteOverlay: {
+    position:        'absolute',
+    bottom:          0,
+    left:            0,
+    right:           0,
+    paddingVertical: 10,
     paddingHorizontal: 14,
-    marginBottom:    8,
-    shadowColor:     '#000',
-    shadowOffset:    { width: 0, height: 1 },
-    shadowOpacity:   0.05,
-    shadowRadius:    2,
-    elevation:       1,
+    backgroundColor: 'rgba(255,255,255,0.88)',
+    alignItems:      'center',
+  },
+  miniCarteOverlayTexte: {
+    fontSize:   13,
+    fontWeight: '700',
+    color:      COULEURS.VERT_PRINCIPAL,
+  },
+
+  // ── Liste troupeau ──
+  ligneVache: {
+    flexDirection:    'row',
+    alignItems:       'center',
+    backgroundColor:  '#FFFFFF',
+    borderRadius:     10,
+    paddingVertical:  13,
+    paddingHorizontal: 14,
+    marginBottom:     8,
+    shadowColor:      '#000',
+    shadowOffset:     { width: 0, height: 1 },
+    shadowOpacity:    0.05,
+    shadowRadius:     2,
+    elevation:        1,
   },
   pointEtat:      { width: 12, height: 12, borderRadius: 6, marginRight: 12 },
   ligneVacheId:   { color: COULEURS.TEXTE_PRINCIPAL, fontSize: 14, fontWeight: '700', width: 56 },
   ligneVacheNom:  { flex: 1, color: COULEURS.TEXTE_SECONDAIRE, fontSize: 13 },
   ligneVacheEtat: { fontSize: 12, fontWeight: '600' },
 
-  // Date du cache
+  // ── Cache ──
   dateMajCache: {
     color:     COULEURS.TEXTE_SECONDAIRE,
     fontSize:  11,
@@ -778,29 +820,29 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
 
-  // Vide
+  // ── Vide ──
   vide:       { alignItems: 'center', paddingVertical: 40 },
   videTexte:  { color: COULEURS.TEXTE_PRINCIPAL, fontSize: 17, fontWeight: '700', textAlign: 'center', marginBottom: 8 },
   videIndice: { color: COULEURS.TEXTE_SECONDAIRE, fontSize: 14, textAlign: 'center', lineHeight: 22 },
 
-  // Bouton flottant
+  // ── Bouton flottant ──
   boutonFlottantContainer: {
     position: 'absolute',
-    bottom:   Platform.OS === 'ios' ? 24 : 16,
-    left:     16,
-    right:    16,
+    bottom:   Platform.OS === 'ios' ? 98 : 90,
+    left:     32,
+    right:    32,
+    alignItems: 'center',
   },
   boutonFlottant: {
     backgroundColor: COULEURS.VERT_PRINCIPAL,
-    borderRadius:    8,
-    height:          52,
-    alignItems:      'center',
-    justifyContent:  'center',
+    borderRadius:    28,
+    paddingVertical:   14,
+    paddingHorizontal: 28,
     shadowColor:     '#000',
     shadowOffset:    { width: 0, height: 4 },
-    shadowOpacity:   0.2,
-    shadowRadius:    6,
-    elevation:       6,
+    shadowOpacity:   0.25,
+    shadowRadius:    8,
+    elevation:       8,
   },
   boutonDesactive: { opacity: 0.6 },
   boutonContenu:   { flexDirection: 'row', alignItems: 'center' },

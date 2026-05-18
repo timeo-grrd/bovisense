@@ -278,9 +278,13 @@ export default function HistoriqueScreen() {
 
       {/* ── Header ── */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.retour}>
-          <Ionicons name="arrow-back" size={22} color={COULEURS.VERT_PRINCIPAL} />
-        </TouchableOpacity>
+        {id ? (
+          <TouchableOpacity onPress={() => router.back()} style={styles.retour}>
+            <Ionicons name="arrow-back" size={22} color={COULEURS.VERT_PRINCIPAL} />
+          </TouchableOpacity>
+        ) : (
+          <View style={{ width: 40 }} />
+        )}
         <Text style={styles.headerTitre} numberOfLines={1}>Historique</Text>
         <View style={{ width: 40 }} />
       </View>
