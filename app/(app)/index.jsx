@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Image,
   ActivityIndicator, RefreshControl, StatusBar, Platform, Alert,
+  InteractionManager, Animated,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, PROVIDER_DEFAULT } from 'react-native-maps';
 
@@ -15,6 +16,7 @@ import { demarrerScheduler } from '../../services/scheduler';
 import { envoyerNotificationUrgence } from '../../services/notifications';
 import { COULEURS, couleurEtat, libelleEtat } from '../../constants/couleurs';
 import { normaliserEtat } from '../../constants/normalisation';
+import { tempsRelatif } from '../../utils/temps';
 import * as Location from 'expo-location';
 import { useConnexion } from '../../services/connexion';
 import { sauvegarderVaches, chargerVachesCache, sauvegarderMeteo, chargerMeteoCache } from '../../services/cache';
@@ -22,24 +24,35 @@ import BanniereHorsLigne from '../../components/BanniereHorsLigne';
 import Toast from '../../components/Toast';
 
 const REGION_DEFAUT = { latitude: 48.0712, longitude: -1.6325, latitudeDelta: 0.025, longitudeDelta: 0.025 };
+const ETATS_CRITIQUES = ['Chute', 'Boiterie_Severe', 'Boiterie_Legere', 'Chaleurs'];
 
 export default function HomeScreen() {
-  const [colliers, setColliers]             = useState([]);
-  const [profil, setProfil]                 = useState(null);
-  const [chargement, setChargement]         = useState(true);
-  const [analyse, setAnalyse]               = useState(false);
-  const [erreur, setErreur]                 = useState(null);
+  const [colliers, setColliers]                 = useState([]);
+  const [chargement, setChargement]             = useState(true);
+  const [analyse, setAnalyse]                   = useState(false);
+  const [erreur, setErreur]                     = useState(null);
   const [rafraichissement, setRafraichissement] = useState(false);
-  const [meteo, setMeteo]                   = useState(null);
-  const [toastVisible, setToastVisible]     = useState(false);
-  const [toastMessage, setToastMessage]     = useState('');
-  const [toastType, setToastType]           = useState('info');
-  const [dateMaj, setDateMaj]               = useState(null);
-  const [derniereActu, setDerniereActu]     = useState(null);
+  const [meteo, setMeteo]                       = useState(null);
+  const [toastVisible, setToastVisible]         = useState(false);
+  const [toastMessage, setToastMessage]         = useState('');
+  const [toastType, setToastType]               = useState('info');
+  const [dateMaj, setDateMaj]                   = useState(null);
+  const [derniereActu, setDerniereActu]         = useState(null);
 
   const { estConnecte, estConnectePrecedentRef } = useConnexion();
   const estConnecteRef = useRef(estConnecte);
   estConnecteRef.current = estConnecte;
+  const scrollRef  = useRef(null);
+  const pulseAnim  = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 0.2, duration: 600, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1,   duration: 600, useNativeDriver: true }),
+      ])
+    ).start();
+  }, [pulseAnim]);
 
   const afficherToast = useCallback((message, type = 'info') => {
     setToastMessage(message);
@@ -66,7 +79,6 @@ export default function HomeScreen() {
         const vachesNormalisees = (coliersData ?? []).map(v => ({
           ...v, etat_sante: normaliserEtat(v.etat_sante),
         }));
-        setProfil(profilData);
         setColliers(vachesNormalisees);
         await sauvegarderVaches(vachesNormalisees);
         console.log('=== CACHE SAUVEGARDÉ ===', vachesNormalisees.length, 'vaches');
@@ -84,7 +96,6 @@ export default function HomeScreen() {
       console.log('=== MODE HORS LIGNE ===');
       setErreur('Impossible de charger les données du troupeau.');
       const cache = await chargerVachesCache();
-      console.log('Cache chargé:', cache.vaches.length, 'vaches');
       if (cache.vaches.length > 0) {
         setColliers(cache.vaches);
         if (cache.dateMaj) setDateMaj(cache.dateMaj);
@@ -95,7 +106,12 @@ export default function HomeScreen() {
     }
   }, []);
 
-  useEffect(() => { chargerDonnees(); }, [chargerDonnees]);
+  useEffect(() => {
+    const task = InteractionManager.runAfterInteractions(() => {
+      chargerDonnees();
+    });
+    return () => task.cancel();
+  }, [chargerDonnees]);
 
   useEffect(() => {
     AsyncStorage.getItem('bovisense_derniere_actu').then(val => {
@@ -119,30 +135,17 @@ export default function HomeScreen() {
           if (cache) setMeteo(cache);
           return;
         }
-
         const { status } = await Location.requestForegroundPermissionsAsync();
-
-        let latitude  = 48.0712;
-        let longitude = -1.6325;
-        let ville     = 'Mon exploitation';
-
+        let latitude = 48.0712, longitude = -1.6325, ville = 'Mon exploitation';
         if (status === 'granted') {
-          const position = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Low,
-          });
-          latitude  = position.coords.latitude;
-          longitude = position.coords.longitude;
-
+          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low });
+          latitude  = pos.coords.latitude;
+          longitude = pos.coords.longitude;
           const adresse = await Location.reverseGeocodeAsync({ latitude, longitude });
-          if (adresse.length > 0) {
-            ville = adresse[0].city || adresse[0].region || 'Mon exploitation';
-          }
+          if (adresse.length > 0) ville = adresse[0].city || adresse[0].region || 'Mon exploitation';
         }
-
-        const urlMeteo = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weathercode,windspeed_10m,relative_humidity_2m&timezone=Europe/Paris`;
-        const response = await fetch(urlMeteo);
-        const data     = await response.json();
-
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weathercode,windspeed_10m,relative_humidity_2m&timezone=Europe/Paris`;
+        const data = await (await fetch(url)).json();
         const meteoData = {
           temperature: Math.round(data.current.temperature_2m),
           weathercode: data.current.weathercode,
@@ -174,8 +177,6 @@ export default function HomeScreen() {
     estConnectePrecedentRef.current = estConnecte;
   }, [estConnecte, afficherToast, chargerDonnees]);
 
-  const ETATS_CRITIQUES = ['Chute', 'Boiterie_Severe', 'Boiterie_Legere', 'Chaleurs'];
-
   const actualiser = useCallback(async () => {
     if (!estConnecteRef.current) {
       Alert.alert('Hors ligne', 'La connexion internet est nécessaire pour analyser les vaches via l\'IA.');
@@ -186,7 +187,7 @@ export default function HomeScreen() {
       setAnalyse(true);
       setErreur(null);
       const etatsAvant = new Map(colliers.map(v => [v.id, v.etat_sante]));
-      const resultats = await analyserTroupeau(colliers);
+      const resultats  = await analyserTroupeau(colliers);
       for (const vache of resultats) {
         const etatAvant = etatsAvant.get(vache.id);
         if (ETATS_CRITIQUES.includes(vache.etat_sante) && etatAvant !== vache.etat_sante) {
@@ -204,38 +205,44 @@ export default function HomeScreen() {
     }
   }, [analyse, colliers]);
 
-  const onRafraichir = () => {
-    setRafraichissement(true);
-    chargerDonnees();
-  };
+  const onRafraichir = () => { setRafraichissement(true); chargerDonnees(); };
 
-  const stats = {
+  const stats = useMemo(() => ({
     saines:           colliers.filter(v => v.etat_sante === 'Saine').length,
     boiteriesLegeres: colliers.filter(v => v.etat_sante === 'Boiterie_Legere').length,
-    boiteries:        colliers.filter(v => v.etat_sante === 'Boiterie_Severe').length,
-    urgences:         colliers.filter(v => v.etat_sante === 'Chute').length,
+    boiteriesSeveres: colliers.filter(v => v.etat_sante === 'Boiterie_Severe').length,
     chaleurs:         colliers.filter(v => v.etat_sante === 'En chaleur').length,
-  };
+    urgences:         colliers.filter(v => v.etat_sante === 'Chute').length,
+    total:            colliers.length,
+  }), [colliers]);
 
-  const vachesUrgence  = colliers.filter(v => v.etat_sante === 'Chute');
-  const alertesRecentes = colliers.filter(v => v.etat_sante !== 'Saine').slice(0, 3);
+  const vachesUrgence = useMemo(() =>
+    colliers.filter(v => v.etat_sante === 'Chute'),
+  [colliers]);
+
+  const dernieresAlertes = useMemo(() =>
+    colliers
+      .filter(v => v.etat_sante !== 'Saine' && v.etat_sante !== 'Normale')
+      .sort((a, b) => new Date(b.derniere_maj) - new Date(a.derniere_maj))
+      .slice(0, 5),
+  [colliers]);
 
   const allerSurCarte = (vache) => {
     router.push({ pathname: '/(app)/map', params: { focusId: vache.id } });
   };
 
-  const regionCarte = (() => {
+  const regionCarte = useMemo(() => {
     const valides = colliers.filter(c => c.latitude && c.longitude);
     if (valides.length > 0) {
       return {
-        latitude:  valides.reduce((s, c) => s + c.latitude, 0) / valides.length,
-        longitude: valides.reduce((s, c) => s + c.longitude, 0) / valides.length,
-        latitudeDelta: 0.025,
+        latitude:      valides.reduce((s, c) => s + c.latitude,  0) / valides.length,
+        longitude:     valides.reduce((s, c) => s + c.longitude, 0) / valides.length,
+        latitudeDelta:  0.025,
         longitudeDelta: 0.025,
       };
     }
     return REGION_DEFAUT;
-  })();
+  }, [colliers]);
 
   if (chargement) {
     return (
@@ -251,21 +258,34 @@ export default function HomeScreen() {
     <View style={styles.fond}>
       <StatusBar barStyle="dark-content" backgroundColor={COULEURS.FOND_CARD} />
 
-      {/* ── En-tête ── */}
+      {/* ── En-tête : logo gauche + météo compacte droite ── */}
       <View style={styles.entete}>
-        <Image
-          source={require('../../assets/logo_bovi_sense_clair.png')}
-          style={styles.enteteLogoImg}
-          resizeMode="contain"
-        />
-        <Text style={styles.enteteTitre}>BOVISENSE</Text>
+        <View style={styles.enteteGauche}>
+          <Image
+            source={require('../../assets/logo_bovi_sense_clair.png')}
+            style={styles.enteteLogoImg}
+            resizeMode="contain"
+          />
+          <Text style={styles.enteteTitre}>BOVISENSE</Text>
+        </View>
+        {meteo && (
+          <TouchableOpacity
+            style={styles.meteoCompact}
+            onPress={() => scrollRef.current?.scrollTo({ y: 0, animated: true })}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.meteoCompactIcone}>{iconeMeteo(meteo.weathercode)}</Text>
+            <Text style={styles.meteoCompactTemp}>{meteo.temperature}°C</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <BanniereHorsLigne visible={!estConnecte} />
 
       <ScrollView
+        ref={scrollRef}
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContenu}
+        contentContainerStyle={[styles.scrollContenu, { paddingBottom: 88 }]}
         refreshControl={
           <RefreshControl
             refreshing={rafraichissement}
@@ -304,14 +324,15 @@ export default function HomeScreen() {
           </Text>
         </View>
 
-        {/* ── Bannières d'urgence ── */}
-        {vachesUrgence.map(vache => (
+        {/* ── Bannières urgence (max 3) avec pulse ── */}
+        {vachesUrgence.slice(0, 3).map(vache => (
           <TouchableOpacity
             key={vache.id}
             style={styles.banniereUrgence}
             onPress={() => allerSurCarte(vache)}
             activeOpacity={0.85}
           >
+            <Animated.View style={[styles.bannierePulse, { opacity: pulseAnim }]} />
             <View style={styles.banniereUrgenceHeader}>
               <Ionicons name="warning" size={20} color="#FFD700" />
               <Text style={styles.banniereUrgenceTexte}>
@@ -343,50 +364,37 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {/* ── État du troupeau ── */}
+        {/* ── Stats horizontales ── */}
         <Text style={styles.sectionTitre}>État du troupeau</Text>
-        <View style={styles.statsCard}>
-          <StatLigne couleur={couleurEtat('Saine')}           label="Saines"              nombre={stats.saines}            />
-          <View style={styles.statSep} />
-          <StatLigne couleur={couleurEtat('Boiterie_Legere')} label="Boiterie légère"      nombre={stats.boiteriesLegeres}  />
-          <View style={styles.statSep} />
-          <StatLigne couleur={couleurEtat('Boiterie_Severe')} label="Boiterie sévère"      nombre={stats.boiteries}         />
-          <View style={styles.statSep} />
-          <StatLigne couleur={couleurEtat('Chaleurs')}        label="En chaleurs"          nombre={stats.chaleurs}          />
-          <View style={styles.statSep} />
-          <StatLigne couleur={couleurEtat('Chute')}           label="Urgence"              nombre={stats.urgences}          />
-        </View>
-
-        {/* ── Bouton IA ── */}
-        <TouchableOpacity
-          style={[styles.boutonActualiser, analyse && styles.boutonDesactive]}
-          onPress={actualiser}
-          disabled={analyse}
-          activeOpacity={0.85}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.statsScroll}
         >
-          {analyse ? (
-            <View style={styles.boutonContenu}>
-              <ActivityIndicator color="#FFF" size="small" />
-              <Text style={[styles.boutonTexte, { marginLeft: 10 }]}>Analyse IA en cours…</Text>
-            </View>
-          ) : (
-            <View style={styles.boutonContenu}>
-              <Ionicons name="refresh" size={20} color="#FFF" />
-              <Text style={[styles.boutonTexte, { marginLeft: 8 }]}>Actualiser via IA Azure</Text>
-            </View>
-          )}
-        </TouchableOpacity>
+          <StatCard couleur={couleurEtat('Saine')}           label="Saines"   nombre={stats.saines}           />
+          <StatCard couleur={couleurEtat('Boiterie_Legere')} label="Légère"   nombre={stats.boiteriesLegeres} />
+          <StatCard couleur={couleurEtat('Boiterie_Severe')} label="Sévère"   nombre={stats.boiteriesSeveres} />
+          <StatCard couleur={couleurEtat('En chaleur')}      label="Chaleurs" nombre={stats.chaleurs}         />
+          <StatCard couleur={couleurEtat('Chute')}           label="Urgences" nombre={stats.urgences}         />
+        </ScrollView>
 
         {/* ── Dernières alertes ── */}
-        <Text style={styles.sectionTitre}>Dernières alertes</Text>
+        <View style={styles.sectionTitreRow}>
+          <Text style={styles.sectionTitre}>Dernières alertes</Text>
+          {dernieresAlertes.length > 0 && (
+            <View style={styles.badgeCount}>
+              <Text style={styles.badgeCountTexte}>{dernieresAlertes.length}</Text>
+            </View>
+          )}
+        </View>
 
-        {alertesRecentes.length === 0 ? (
+        {dernieresAlertes.length === 0 ? (
           <View style={styles.troupeauSain}>
             <Text style={{ fontSize: 36, marginBottom: 8 }}>✅</Text>
             <Text style={styles.troupeauSainTexte}>Troupeau en bonne santé</Text>
           </View>
         ) : (
-          alertesRecentes.map(vache => (
+          dernieresAlertes.map(vache => (
             <TouchableOpacity
               key={vache.id}
               style={styles.carteAlerte}
@@ -397,16 +405,12 @@ export default function HomeScreen() {
               <View style={styles.carteAlerteContenu}>
                 <View style={styles.carteAlerteLigne}>
                   <Text style={styles.carteAlerteId}>{vache.id_vache}</Text>
-                  {vache.nom_vache ? (
-                    <Text style={styles.carteAlerteNom}>{vache.nom_vache}</Text>
-                  ) : null}
+                  {vache.nom_vache ? <Text style={styles.carteAlerteNom}>{vache.nom_vache}</Text> : null}
                   <View style={[styles.badge, { backgroundColor: couleurEtat(vache.etat_sante) }]}>
                     <Text style={styles.badgeTexte}>{libelleEtat(vache.etat_sante)}</Text>
                   </View>
                 </View>
-                <Text style={styles.carteAlerteDate}>
-                  Dernière analyse : {formaterDate(vache.derniere_maj)}
-                </Text>
+                <Text style={styles.carteAlerteDate}>{tempsRelatif(vache.derniere_maj)}</Text>
                 <TouchableOpacity
                   onPress={() => router.push({ pathname: '/(app)/historique', params: { id: vache.id, nom: vache.id_vache } })}
                   activeOpacity={0.7}
@@ -424,10 +428,7 @@ export default function HomeScreen() {
         {colliers.length > 0 && (
           <>
             <Text style={styles.sectionTitre}>Localisation</Text>
-            <TouchableOpacity
-              activeOpacity={0.9}
-              onPress={() => router.push('/(app)/map')}
-            >
+            <TouchableOpacity activeOpacity={0.9} onPress={() => router.push('/(app)/map')}>
               <View style={styles.miniCarteContainer}>
                 <MapView
                   style={styles.miniCarte}
@@ -483,9 +484,7 @@ export default function HomeScreen() {
           <View style={styles.vide}>
             <Text style={{ fontSize: 40, marginBottom: 12 }}>📡</Text>
             <Text style={styles.videTexte}>Aucun collier configuré</Text>
-            <Text style={styles.videIndice}>
-              Ajoutez vos premiers colliers dans l'onglet Paramètres
-            </Text>
+            <Text style={styles.videIndice}>Ajoutez vos premiers colliers dans l'onglet Paramètres</Text>
           </View>
         )}
 
@@ -494,9 +493,29 @@ export default function HomeScreen() {
             Données en cache du {dateMaj.toLocaleDateString('fr-FR')} à {dateMaj.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}
           </Text>
         )}
-
-        <View style={{ height: 24 }} />
       </ScrollView>
+
+      {/* ── Bouton actualiser flottant ── */}
+      <View style={styles.boutonFlottantContainer}>
+        <TouchableOpacity
+          style={[styles.boutonFlottant, analyse && styles.boutonDesactive]}
+          onPress={actualiser}
+          disabled={analyse}
+          activeOpacity={0.85}
+        >
+          {analyse ? (
+            <View style={styles.boutonContenu}>
+              <ActivityIndicator color="#FFF" size="small" />
+              <Text style={[styles.boutonTexte, { marginLeft: 10 }]}>Analyse IA en cours…</Text>
+            </View>
+          ) : (
+            <View style={styles.boutonContenu}>
+              <Ionicons name="refresh" size={20} color="#FFF" />
+              <Text style={[styles.boutonTexte, { marginLeft: 8 }]}>Actualiser via IA Azure</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+      </View>
 
       <Toast message={toastMessage} visible={toastVisible} type={toastType} />
     </View>
@@ -504,12 +523,12 @@ export default function HomeScreen() {
 }
 
 function iconeMeteo(code) {
-  if (code === 0)                  return '☀️';
-  if (code <= 3)                   return '⛅';
-  if (code <= 48)                  return '🌫️';
-  if (code <= 67)                  return '🌧️';
-  if (code <= 77)                  return '❄️';
-  if (code <= 82)                  return '🌦️';
+  if (code === 0)  return '☀️';
+  if (code <= 3)   return '⛅';
+  if (code <= 48)  return '🌫️';
+  if (code <= 67)  return '🌧️';
+  if (code <= 77)  return '❄️';
+  if (code <= 82)  return '🌦️';
   return '⛈️';
 }
 
@@ -525,20 +544,14 @@ function MiniMarqueur({ couleur }) {
   );
 }
 
-function StatLigne({ couleur, label, nombre }) {
+function StatCard({ couleur, label, nombre }) {
   return (
-    <View style={styles.statLigne}>
-      <View style={[styles.statDot, { backgroundColor: couleur }]} />
-      <Text style={styles.statLabel}>{label}</Text>
+    <View style={styles.statCard}>
+      <View style={[styles.statRond, { backgroundColor: couleur }]} />
       <Text style={styles.statNombre}>{nombre}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
-}
-
-function formaterDate(iso) {
-  if (!iso) return 'Inconnue';
-  const d = new Date(iso);
-  return `${d.toLocaleDateString('fr-FR')} ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
 }
 
 const styles = StyleSheet.create({
@@ -546,158 +559,151 @@ const styles = StyleSheet.create({
   centrer: { flex: 1, backgroundColor: COULEURS.FOND_PRINCIPAL, justifyContent: 'center', alignItems: 'center' },
   texteChargement: { color: COULEURS.TEXTE_SECONDAIRE, marginTop: 12, fontSize: 15 },
 
-  // En-tête
+  // En-tête 60px visible + barre de statut
   entete: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
+    flexDirection:    'row',
+    alignItems:       'center',
+    justifyContent:   'space-between',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 52 : 36,
-    paddingBottom: 14,
-    backgroundColor: COULEURS.FOND_CARD,
+    paddingTop:       Platform.OS === 'ios' ? 52 : 36,
+    paddingBottom:    10,
+    backgroundColor:  COULEURS.FOND_CARD,
     borderBottomWidth: 1,
     borderBottomColor: COULEURS.SEPARATEUR,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
-    elevation: 2,
+    shadowColor:      '#000',
+    shadowOffset:     { width: 0, height: 1 },
+    shadowOpacity:    0.06,
+    shadowRadius:     3,
+    elevation:        2,
   },
+  enteteGauche:  { flexDirection: 'row', alignItems: 'center', gap: 10 },
   enteteLogoImg: { width: 32, height: 32 },
-  enteteTitre: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: COULEURS.TEXTE_PRINCIPAL,
-    letterSpacing: 2,
+  enteteTitre:   { fontSize: 18, fontWeight: '800', color: COULEURS.TEXTE_PRINCIPAL, letterSpacing: 2 },
+
+  meteoCompact: {
+    flexDirection:   'row',
+    alignItems:      'center',
+    gap:             4,
+    backgroundColor: '#F5F5F5',
+    borderRadius:    20,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
   },
+  meteoCompactIcone: { fontSize: 18 },
+  meteoCompactTemp:  { fontSize: 15, fontWeight: '700', color: COULEURS.TEXTE_PRINCIPAL },
 
   scroll:        { flex: 1 },
   scrollContenu: { paddingHorizontal: 16, paddingTop: 16 },
 
-  // Bannière urgence
-  banniereUrgence: {
-    backgroundColor: COULEURS.ROUGE_URGENCE,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
+  // Widget météo principal
+  meteoWidget: {
+    backgroundColor: '#FFFFFF',
+    borderRadius:    12,
+    padding:         16,
+    flexDirection:   'row',
+    alignItems:      'center',
+    justifyContent:  'space-between',
+    marginBottom:    8,
+    shadowColor:     '#000',
+    shadowOffset:    { width: 0, height: 2 },
+    shadowOpacity:   0.08,
+    shadowRadius:    4,
+    elevation:       2,
   },
-  banniereUrgenceHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 6,
-  },
-  banniereUrgenceTexte: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
-    flex: 1,
-  },
-  banniereUrgenceSous: {
-    color: 'rgba(255,255,255,0.8)',
-    fontSize: 13,
-    marginBottom: 10,
-  },
-  banniereUrgenceBouton: {
-    backgroundColor: 'rgba(0,0,0,0.25)',
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  banniereUrgenceBoutonTexte: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  banniereResume: {
-    backgroundColor: '#FF6B6B',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 16,
-    alignItems: 'center',
-  },
-  banniereResumeTexte: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
+  meteoIcone:   { fontSize: 40, marginRight: 12 },
+  meteoTemp:    { fontSize: 28, fontWeight: '800', color: COULEURS.TEXTE_PRINCIPAL },
+  meteoLieu:    { fontSize: 12, color: COULEURS.TEXTE_SECONDAIRE, fontStyle: 'italic', marginTop: 2 },
+  meteoDetails: { alignItems: 'flex-end', gap: 4 },
+  meteoDetail:  { fontSize: 13, color: COULEURS.TEXTE_SECONDAIRE, fontWeight: '500' },
 
   // Dernière actualisation IA
   derniereActu: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
+    alignItems:    'center',
+    gap:           4,
     paddingHorizontal: 4,
-    marginBottom: 8,
+    marginBottom:  12,
   },
-  derniereActuTexte: {
-    fontSize: 12,
-    color: '#666666',
-    fontStyle: 'italic',
+  derniereActuTexte: { fontSize: 12, color: '#666666', fontStyle: 'italic' },
+
+  // Bannières urgence avec pulse gauche
+  banniereUrgence: {
+    backgroundColor: COULEURS.ROUGE_URGENCE,
+    borderRadius:    12,
+    padding:         16,
+    marginBottom:    12,
+    overflow:        'hidden',
   },
+  bannierePulse: {
+    position: 'absolute',
+    left:     0,
+    top:      0,
+    bottom:   0,
+    width:    6,
+    backgroundColor: '#FFD700',
+  },
+  banniereUrgenceHeader:     { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  banniereUrgenceTexte:      { color: '#FFFFFF', fontSize: 14, fontWeight: '800', flex: 1 },
+  banniereUrgenceSous:       { color: 'rgba(255,255,255,0.8)', fontSize: 13, marginBottom: 10 },
+  banniereUrgenceBouton:     { backgroundColor: 'rgba(0,0,0,0.25)', borderRadius: 8, paddingVertical: 10, alignItems: 'center' },
+  banniereUrgenceBoutonTexte:{ color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+  banniereResume:             { backgroundColor: '#FF6B6B', borderRadius: 8, padding: 12, marginBottom: 16, alignItems: 'center' },
+  banniereResumeTexte:        { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
 
   // Erreur
   erreurBandeau: {
     backgroundColor: '#FEF3CD',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: COULEURS.ORANGE_ALERTE,
+    borderRadius:    8,
+    padding:         12,
+    marginBottom:    16,
+    borderWidth:     1,
+    borderColor:     COULEURS.ORANGE_ALERTE,
   },
   erreurTexte: { color: '#7D4E00', fontSize: 13 },
 
   // Titre de section
   sectionTitre: {
-    fontSize: 16,
+    fontSize:   16,
     fontWeight: '700',
-    color: COULEURS.TEXTE_PRINCIPAL,
+    color:      COULEURS.TEXTE_PRINCIPAL,
     marginBottom: 10,
-    marginTop: 6,
+    marginTop:    6,
   },
-
-  // Stats (liste verticale)
-  statsCard: {
-    backgroundColor: COULEURS.FOND_CARD,
-    borderRadius: 12,
-    marginBottom: 16,
-    paddingVertical: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  statLigne: {
+  sectionTitreRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    minHeight: 52,
+    alignItems:    'center',
+    gap:           8,
+    marginBottom:  10,
+    marginTop:     6,
   },
-  statDot:    { width: 14, height: 14, borderRadius: 7, marginRight: 14 },
-  statLabel:  { flex: 1, fontSize: 15, color: COULEURS.TEXTE_PRINCIPAL, fontWeight: '500' },
-  statNombre: { fontSize: 22, fontWeight: '800', color: COULEURS.TEXTE_PRINCIPAL },
-  statSep:    { height: 1, backgroundColor: COULEURS.SEPARATEUR, marginHorizontal: 16 },
+  badgeCount: {
+    backgroundColor:  COULEURS.ROUGE_URGENCE,
+    borderRadius:     10,
+    minWidth:         20,
+    height:           20,
+    justifyContent:   'center',
+    alignItems:       'center',
+    paddingHorizontal: 6,
+  },
+  badgeCountTexte: { color: '#FFF', fontSize: 11, fontWeight: '800' },
 
-  // Bouton IA
-  boutonActualiser: {
-    backgroundColor: COULEURS.VERT_PRINCIPAL,
-    borderRadius: 8,
-    height: 52,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 4,
-    elevation: 2,
+  // Stats horizontales
+  statsScroll: { paddingRight: 16, gap: 10, marginBottom: 16 },
+  statCard: {
+    width:           100,
+    backgroundColor: COULEURS.FOND_CARD,
+    borderRadius:    12,
+    padding:         12,
+    alignItems:      'center',
+    shadowColor:     '#000',
+    shadowOffset:    { width: 0, height: 2 },
+    shadowOpacity:   0.08,
+    shadowRadius:    4,
+    elevation:       2,
   },
-  boutonDesactive: { opacity: 0.6 },
-  boutonContenu:   { flexDirection: 'row', alignItems: 'center' },
-  boutonTexte:     { color: '#FFF', fontSize: 15, fontWeight: '700' },
+  statRond:   { width: 28, height: 28, borderRadius: 14, marginBottom: 6 },
+  statNombre: { fontSize: 22, fontWeight: '800', color: COULEURS.TEXTE_PRINCIPAL, marginBottom: 2 },
+  statLabel:  { fontSize: 11, color: COULEURS.TEXTE_SECONDAIRE, fontWeight: '500', textAlign: 'center' },
 
   // Troupeau sain
   troupeauSain:      { alignItems: 'center', paddingVertical: 28 },
@@ -706,17 +712,17 @@ const styles = StyleSheet.create({
   // Cartes alertes
   carteAlerte: {
     backgroundColor: COULEURS.FOND_CARD,
-    borderRadius: 12,
-    marginBottom: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    overflow: 'hidden',
-    minHeight: 72,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 3,
-    elevation: 1,
+    borderRadius:    12,
+    marginBottom:    10,
+    flexDirection:   'row',
+    alignItems:      'center',
+    overflow:        'hidden',
+    minHeight:       72,
+    shadowColor:     '#000',
+    shadowOffset:    { width: 0, height: 1 },
+    shadowOpacity:   0.06,
+    shadowRadius:    3,
+    elevation:       1,
   },
   bandeLaterale:      { width: 5, alignSelf: 'stretch' },
   carteAlerteContenu: { flex: 1, paddingHorizontal: 14, paddingVertical: 12 },
@@ -730,63 +736,42 @@ const styles = StyleSheet.create({
 
   // Mini carte
   miniCarteContainer: {
-    height: 180,
+    height:       180,
     borderRadius: 12,
-    overflow: 'hidden',
+    overflow:     'hidden',
     marginBottom: 16,
-    shadowColor: '#000',
+    shadowColor:  '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,
     shadowRadius: 4,
-    elevation: 2,
+    elevation:    2,
   },
   miniCarte: { flex: 1 },
 
   // Liste troupeau
   ligneVache: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection:   'row',
+    alignItems:      'center',
     backgroundColor: COULEURS.FOND_CARD,
-    borderRadius: 10,
+    borderRadius:    10,
     paddingVertical: 13,
     paddingHorizontal: 14,
-    marginBottom: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    marginBottom:    8,
+    shadowColor:     '#000',
+    shadowOffset:    { width: 0, height: 1 },
+    shadowOpacity:   0.05,
+    shadowRadius:    2,
+    elevation:       1,
   },
-  pointEtat:     { width: 12, height: 12, borderRadius: 6, marginRight: 12 },
-  ligneVacheId:  { color: COULEURS.TEXTE_PRINCIPAL, fontSize: 14, fontWeight: '700', width: 56 },
-  ligneVacheNom: { flex: 1, color: COULEURS.TEXTE_SECONDAIRE, fontSize: 13 },
+  pointEtat:      { width: 12, height: 12, borderRadius: 6, marginRight: 12 },
+  ligneVacheId:   { color: COULEURS.TEXTE_PRINCIPAL, fontSize: 14, fontWeight: '700', width: 56 },
+  ligneVacheNom:  { flex: 1, color: COULEURS.TEXTE_SECONDAIRE, fontSize: 13 },
   ligneVacheEtat: { fontSize: 12, fontWeight: '600' },
-
-  // Widget météo
-  meteoWidget: {
-    backgroundColor:  '#FFFFFF',
-    borderRadius:     12,
-    padding:          16,
-    flexDirection:    'row',
-    alignItems:       'center',
-    justifyContent:   'space-between',
-    marginBottom:     16,
-    shadowColor:      '#000',
-    shadowOffset:     { width: 0, height: 2 },
-    shadowOpacity:    0.08,
-    shadowRadius:     4,
-    elevation:        2,
-  },
-  meteoIcone:   { fontSize: 40, marginRight: 12 },
-  meteoTemp:    { fontSize: 28, fontWeight: '800', color: COULEURS.TEXTE_PRINCIPAL },
-  meteoLieu:    { fontSize: 12, color: COULEURS.TEXTE_SECONDAIRE, marginTop: 2 },
-  meteoDetails: { alignItems: 'flex-end', gap: 4 },
-  meteoDetail:  { fontSize: 13, color: COULEURS.TEXTE_SECONDAIRE, fontWeight: '500' },
 
   // Date du cache
   dateMajCache: {
-    color: COULEURS.TEXTE_SECONDAIRE,
-    fontSize: 11,
+    color:     COULEURS.TEXTE_SECONDAIRE,
+    fontSize:  11,
     textAlign: 'center',
     marginTop: 8,
     marginBottom: 4,
@@ -794,7 +779,30 @@ const styles = StyleSheet.create({
   },
 
   // Vide
-  vide:        { alignItems: 'center', paddingVertical: 40 },
-  videTexte:   { color: COULEURS.TEXTE_PRINCIPAL, fontSize: 17, fontWeight: '700', textAlign: 'center', marginBottom: 8 },
-  videIndice:  { color: COULEURS.TEXTE_SECONDAIRE, fontSize: 14, textAlign: 'center', lineHeight: 22 },
+  vide:       { alignItems: 'center', paddingVertical: 40 },
+  videTexte:  { color: COULEURS.TEXTE_PRINCIPAL, fontSize: 17, fontWeight: '700', textAlign: 'center', marginBottom: 8 },
+  videIndice: { color: COULEURS.TEXTE_SECONDAIRE, fontSize: 14, textAlign: 'center', lineHeight: 22 },
+
+  // Bouton flottant
+  boutonFlottantContainer: {
+    position: 'absolute',
+    bottom:   Platform.OS === 'ios' ? 24 : 16,
+    left:     16,
+    right:    16,
+  },
+  boutonFlottant: {
+    backgroundColor: COULEURS.VERT_PRINCIPAL,
+    borderRadius:    8,
+    height:          52,
+    alignItems:      'center',
+    justifyContent:  'center',
+    shadowColor:     '#000',
+    shadowOffset:    { width: 0, height: 4 },
+    shadowOpacity:   0.2,
+    shadowRadius:    6,
+    elevation:       6,
+  },
+  boutonDesactive: { opacity: 0.6 },
+  boutonContenu:   { flexDirection: 'row', alignItems: 'center' },
+  boutonTexte:     { color: '#FFF', fontSize: 15, fontWeight: '700' },
 });

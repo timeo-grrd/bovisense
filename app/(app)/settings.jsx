@@ -336,7 +336,7 @@ export default function SettingsScreen() {
               scrollEnabled={true}
               nestedScrollEnabled={true}
               showsVerticalScrollIndicator={false}
-              getItemLayout={(data, index) => ({ length: 53, offset: 53 * index, index })}
+              getItemLayout={(data, index) => ({ length: 64, offset: 64 * index, index })}
               maxToRenderPerBatch={10}
               windowSize={5}
               removeClippedSubviews={true}

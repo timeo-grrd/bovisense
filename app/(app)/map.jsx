@@ -272,18 +272,11 @@ export default function MapScreen() {
         {colliersVisibles.map(vache => {
           if (!vache.latitude || !vache.longitude) return null;
           return (
-            <Marker
+            <MarqueurVache
               key={vache.id}
-              coordinate={{ latitude: vache.latitude, longitude: vache.longitude }}
-              onPress={() => setVacheSelectionnee(vache)}
-            >
-              <MarqueurVache
-                etat={vache.etat_sante}
-                idVache={vache.id_vache}
-                couleur={getCouleurEtat(vache.etat_sante)}
-                selectionne={vacheSelectionnee?.id === vache.id}
-              />
-            </Marker>
+              vache={vache}
+              onPress={setVacheSelectionnee}
+            />
           );
         })}
       </MapView>
@@ -484,46 +477,19 @@ export default function MapScreen() {
   );
 }
 
-const MarqueurVache = memo(function MarqueurVache({ etat, idVache, couleur, selectionne }) {
-  const estUrgence = etat === 'Chute';
-  const taille = selectionne ? 48 : estUrgence ? 42 : 36;
+const MarqueurVache = memo(function MarqueurVache({ vache, onPress }) {
+  const couleur = getCouleurEtat(vache.etat_sante);
   return (
-    <View style={{ alignItems: 'center' }}>
-      <View style={{
-        backgroundColor: couleur,
-        borderRadius:    taille / 2,
-        width:           taille,
-        height:          taille,
-        justifyContent:  'center',
-        alignItems:      'center',
-        borderWidth:     selectionne ? 3 : 2,
-        borderColor:     selectionne ? '#FFF' : 'rgba(255,255,255,0.7)',
-        elevation:       selectionne ? 8 : 4,
-        shadowColor:     '#000',
-        shadowOffset:    { width: 0, height: 2 },
-        shadowOpacity:   0.35,
-        shadowRadius:    4,
-      }}>
-        <Text style={{ fontSize: selectionne ? 22 : estUrgence ? 20 : 16 }}>🐄</Text>
+    <Marker
+      coordinate={{ latitude: vache.latitude, longitude: vache.longitude }}
+      onPress={() => onPress(vache)}
+    >
+      <View style={[styles.marqueur, { backgroundColor: couleur }]}>
+        <Text style={styles.marqueurTexte}>🐄</Text>
       </View>
-      {estUrgence && (
-        <Text style={{
-          color:           '#FFFFFF',
-          fontSize:        11,
-          fontWeight:      '800',
-          backgroundColor: couleur,
-          paddingHorizontal: 6,
-          paddingVertical: 2,
-          borderRadius:    4,
-          marginTop:       3,
-          overflow:        'hidden',
-        }}>
-          {idVache}
-        </Text>
-      )}
-    </View>
+    </Marker>
   );
-});
+}, (prev, next) => prev.vache.etat_sante === next.vache.etat_sante);
 
 function DonneeCapteur({ icone, label, valeur }) {
   return (
@@ -537,6 +503,21 @@ function DonneeCapteur({ icone, label, valeur }) {
 
 const styles = StyleSheet.create({
   fond:    { flex: 1, backgroundColor: '#000' },
+  marqueur: {
+    width:          36,
+    height:         36,
+    borderRadius:   18,
+    justifyContent: 'center',
+    alignItems:     'center',
+    borderWidth:    2,
+    borderColor:    'rgba(255,255,255,0.7)',
+    elevation:      4,
+    shadowColor:    '#000',
+    shadowOffset:   { width: 0, height: 2 },
+    shadowOpacity:  0.35,
+    shadowRadius:   4,
+  },
+  marqueurTexte: { fontSize: 16 },
   centrer: { flex: 1, backgroundColor: COULEURS.FOND_PRINCIPAL, justifyContent: 'center', alignItems: 'center' },
   texteChargement: { color: COULEURS.TEXTE_SECONDAIRE, marginTop: 12 },
   carte:   { flex: 1 },

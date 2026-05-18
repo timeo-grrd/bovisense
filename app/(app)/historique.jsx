@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, TouchableOpacity, ScrollView, StyleSheet,
+  View, Text, TouchableOpacity, ScrollView, FlatList, StyleSheet,
   ActivityIndicator, StatusBar, Platform,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
@@ -439,11 +439,20 @@ export default function HistoriqueScreen() {
               </Text>
             </View>
           ) : (
-            historiqueFiltre.map(item => {
-              const idVache  = item.colliers?.id_vache ?? nom;
-              const nomVache = item.colliers?.nom_vache;
-              return <CarteItem key={item.id} item={item} idVache={idVache} nomVache={nomVache} showVache />;
-            })
+            <FlatList
+              data={historiqueFiltre}
+              keyExtractor={item => item.id}
+              renderItem={({ item }) => {
+                const idVache  = item.colliers?.id_vache ?? nom;
+                const nomVache = item.colliers?.nom_vache;
+                return <CarteItem item={item} idVache={idVache} nomVache={nomVache} showVache />;
+              }}
+              maxToRenderPerBatch={10}
+              windowSize={5}
+              removeClippedSubviews={true}
+              initialNumToRender={15}
+              scrollEnabled={false}
+            />
           )}
 
           <View style={{ height: 32 }} />
