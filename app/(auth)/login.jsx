@@ -25,12 +25,12 @@ export default function LoginScreen() {
     try {
       setChargement(true);
       setErreur(null);
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email:    form.email.trim().toLowerCase(),
         password: form.motDePasse,
       });
       if (error) throw error;
-      // Redirection gérée par le RootLayout via onAuthStateChange
+      if (data?.session) { router.replace('/(app)'); }
     } catch (e) {
       setErreur(
         e.message === 'Invalid login credentials'

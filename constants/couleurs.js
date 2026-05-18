@@ -20,6 +20,7 @@ export function couleurEtat(etat) {
     case 'Chute':            return '#C0392B';
     case 'Boiterie_Severe':  return '#E67E22';
     case 'Boiterie_Legere':  return '#F4A261';
+    case 'En chaleur':       return '#E9C46A';
     case 'Chaleurs':         return '#E9C46A';
     case 'Saine':            return '#2D5016';
     default:                 return '#999999';
@@ -31,7 +32,8 @@ export function libelleEtat(etat) {
     case 'Chute':            return 'Urgence — Chute';
     case 'Boiterie_Severe':  return 'Boiterie sévère';
     case 'Boiterie_Legere':  return 'Boiterie légère';
-    case 'Chaleurs':         return 'En chaleurs';
+    case 'En chaleur':       return 'En chaleur';
+    case 'Chaleurs':         return 'En chaleur';
     case 'Saine':            return 'Saine';
     default:                 return etat || 'Inconnu';
   }

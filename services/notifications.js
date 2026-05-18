@@ -1,5 +1,4 @@
 import * as Notifications from 'expo-notifications';
-import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 
 Notifications.setNotificationHandler({
@@ -11,56 +10,69 @@ Notifications.setNotificationHandler({
 });
 
 export async function enregistrerNotifications() {
-  if (!Device.isDevice) return null;
-
-  const { status: existingStatus } = await Notifications.getPermissionsAsync();
-  let finalStatus = existingStatus;
-
-  if (existingStatus !== 'granted') {
-    const { status } = await Notifications.requestPermissionsAsync();
-    finalStatus = status;
-  }
-
-  if (finalStatus !== 'granted') return null;
-
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('bovisense', {
-      name: 'BoviSense Alertes',
+      name: 'Alertes BoviSense',
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
       lightColor: '#C0392B',
-      sound: true,
+      sound: 'default',
     });
   }
-
-  return true;
+  const { status } = await Notifications.requestPermissionsAsync();
+  console.log('Permission notifications:', status);
+  if (status === 'granted') {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: '✅ BoviSense actif',
+        body: 'Les alertes sont activées',
+        sound: 'default',
+      },
+      trigger: { seconds: 3 },
+    });
+  }
+  return status === 'granted';
 }
 
 export async function envoyerNotificationUrgence(nomVache, etat) {
-  const titres = {
-    'Chute':            '🚨 Urgence vitale !',
-    'Boiterie_Severe':  '⚠️ Boiterie sévère détectée',
-    'Boiterie_Legere':  '⚠️ Boiterie légère détectée',
-    'Chaleurs':         '🔔 Chaleurs détectées',
-  };
-
-  const messages = {
-    'Chute':           `Vache ${nomVache} immobilisée — intervention immédiate requise`,
-    'Boiterie_Severe': `Vache ${nomVache} — boiterie sévère, consulter rapidement`,
-    'Boiterie_Legere': `Vache ${nomVache} — boiterie légère détectée`,
-    'Chaleurs':        `Vache ${nomVache} — période de chaleurs en cours`,
-  };
-
-  if (!titres[etat]) return;
-
-  await Notifications.scheduleNotificationAsync({
-    content: {
-      title:    titres[etat],
-      body:     messages[etat],
-      data:     { nomVache, etat },
-      sound:    true,
-      priority: etat === 'Chute' ? 'max' : 'high',
+  const configs = {
+    'Chute': {
+      titre: '🚨 Urgence vitale !',
+      corps: `Vache ${nomVache} immobilisée — intervention immédiate requise`,
     },
-    trigger: null,
-  });
+    'Boiterie_Severe': {
+      titre: '⚠️ Boiterie sévère détectée',
+      corps: `Vache ${nomVache} — consultation vétérinaire recommandée`,
+    },
+    'Boiterie_Legere': {
+      titre: '⚠️ Boiterie légère détectée',
+      corps: `Vache ${nomVache} — à surveiller`,
+    },
+    'En chaleur': {
+      titre: '🔔 Chaleurs détectées',
+      corps: `Vache ${nomVache} — période de chaleurs en cours`,
+    },
+  };
+
+  const config = configs[etat];
+  if (!config) return;
+
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: config.titre,
+        body: config.corps,
+        sound: 'default',
+        data: { nomVache, etat },
+        ...(Platform.OS === 'android' && {
+          channelId: 'bovisense',
+          priority: 'max',
+          vibrate: [0, 250, 250, 250],
+        }),
+      },
+      trigger: null,
+    });
+  } catch (e) {
+    console.log('Erreur notification:', e);
+  }
 }

@@ -1,15 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet, Image,
   ActivityIndicator, RefreshControl, StatusBar, Platform, Alert,
 } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE, PROVIDER_DEFAULT } from 'react-native-maps';
+
+const PROVIDER_CARTE = Platform.OS === 'android' ? PROVIDER_GOOGLE : PROVIDER_DEFAULT;
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import { analyserTroupeau } from '../../services/aiService';
+import { demarrerScheduler } from '../../services/scheduler';
 import { envoyerNotificationUrgence } from '../../services/notifications';
 import { COULEURS, couleurEtat, libelleEtat } from '../../constants/couleurs';
+import { normaliserEtat } from '../../constants/normalisation';
 import * as Location from 'expo-location';
 import { useConnexion } from '../../services/connexion';
 import { sauvegarderVaches, chargerVachesCache, sauvegarderMeteo, chargerMeteoCache } from '../../services/cache';
@@ -30,6 +35,7 @@ export default function HomeScreen() {
   const [toastMessage, setToastMessage]     = useState('');
   const [toastType, setToastType]           = useState('info');
   const [dateMaj, setDateMaj]               = useState(null);
+  const [derniereActu, setDerniereActu]     = useState(null);
 
   const { estConnecte, estConnectePrecedentRef } = useConnexion();
   const estConnecteRef = useRef(estConnecte);
@@ -43,6 +49,7 @@ export default function HomeScreen() {
   }, []);
 
   const chargerDonnees = useCallback(async () => {
+    console.log('=== CHARGEMENT VACHES ===');
     try {
       setErreur(null);
       if (estConnecteRef.current) {
@@ -52,28 +59,35 @@ export default function HomeScreen() {
         const [{ data: profilData }, { data: coliersData, error: errColliers }] =
           await Promise.all([
             supabase.from('profiles').select('*').eq('id', user.id).maybeSingle(),
-            supabase.from('colliers').select('*').eq('user_id', user.id).order('etat_sante'),
+            supabase.from('colliers').select('*').eq('user_id', user.id).neq('en_paturage', false).order('etat_sante'),
           ]);
 
         if (errColliers) throw errColliers;
-        const vachesFiltrees = (coliersData ?? []).filter(v => v.en_paturage !== false);
+        const vachesNormalisees = (coliersData ?? []).map(v => ({
+          ...v, etat_sante: normaliserEtat(v.etat_sante),
+        }));
         setProfil(profilData);
-        setColliers(vachesFiltrees);
-        await sauvegarderVaches(vachesFiltrees);
+        setColliers(vachesNormalisees);
+        await sauvegarderVaches(vachesNormalisees);
+        console.log('=== CACHE SAUVEGARDÉ ===', vachesNormalisees.length, 'vaches');
         setDateMaj(new Date());
       } else {
+        console.log('=== MODE HORS LIGNE ===');
         const cache = await chargerVachesCache();
-        if (cache) {
-          setColliers(cache.donnees);
-          setDateMaj(new Date(cache.dateMaj));
+        console.log('Cache chargé:', cache.vaches.length, 'vaches');
+        if (cache.vaches.length > 0) {
+          setColliers(cache.vaches);
+          if (cache.dateMaj) setDateMaj(cache.dateMaj);
         }
       }
     } catch {
+      console.log('=== MODE HORS LIGNE ===');
       setErreur('Impossible de charger les données du troupeau.');
       const cache = await chargerVachesCache();
-      if (cache) {
-        setColliers(cache.donnees);
-        setDateMaj(new Date(cache.dateMaj));
+      console.log('Cache chargé:', cache.vaches.length, 'vaches');
+      if (cache.vaches.length > 0) {
+        setColliers(cache.vaches);
+        if (cache.dateMaj) setDateMaj(cache.dateMaj);
       }
     } finally {
       setChargement(false);
@@ -84,11 +98,25 @@ export default function HomeScreen() {
   useEffect(() => { chargerDonnees(); }, [chargerDonnees]);
 
   useEffect(() => {
+    AsyncStorage.getItem('bovisense_derniere_actu').then(val => {
+      if (val) setDerniereActu(new Date(val));
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const arreter = demarrerScheduler(() => {
+      chargerDonnees();
+      setDerniereActu(new Date());
+    });
+    return arreter;
+  }, [chargerDonnees]);
+
+  useEffect(() => {
     const obtenirMeteo = async () => {
       try {
         if (!estConnecteRef.current) {
           const cache = await chargerMeteoCache();
-          if (cache) setMeteo(cache.donnees);
+          if (cache) setMeteo(cache);
           return;
         }
 
@@ -126,7 +154,7 @@ export default function HomeScreen() {
         await sauvegarderMeteo(meteoData);
       } catch {
         const cache = await chargerMeteoCache();
-        if (cache) setMeteo(cache.donnees);
+        if (cache) setMeteo(cache);
       }
     };
     obtenirMeteo();
@@ -148,7 +176,7 @@ export default function HomeScreen() {
 
   const ETATS_CRITIQUES = ['Chute', 'Boiterie_Severe', 'Boiterie_Legere', 'Chaleurs'];
 
-  const actualiser = async () => {
+  const actualiser = useCallback(async () => {
     if (!estConnecteRef.current) {
       Alert.alert('Hors ligne', 'La connexion internet est nécessaire pour analyser les vaches via l\'IA.');
       return;
@@ -166,29 +194,28 @@ export default function HomeScreen() {
         }
       }
       setColliers(resultats);
+      const maintenant = new Date();
+      setDerniereActu(maintenant);
+      await AsyncStorage.setItem('bovisense_derniere_actu', maintenant.toISOString());
     } catch {
       setErreur('Erreur lors de l\'analyse IA. Vérifiez votre connexion.');
     } finally {
       setAnalyse(false);
     }
-  };
+  }, [analyse, colliers]);
 
   const onRafraichir = () => {
     setRafraichissement(true);
     chargerDonnees();
   };
 
-  const stats = colliers.reduce(
-    (acc, v) => {
-      if (v.etat_sante === 'Saine')            acc.saines++;
-      else if (v.etat_sante === 'Chute')            acc.urgences++;
-      else if (v.etat_sante === 'Boiterie_Severe')  acc.boiteries++;
-      else if (v.etat_sante === 'Boiterie_Legere')  acc.boiteriesLegeres++;
-      else if (v.etat_sante === 'Chaleurs')          acc.chaleurs++;
-      return acc;
-    },
-    { saines: 0, boiteries: 0, boiteriesLegeres: 0, urgences: 0, chaleurs: 0 }
-  );
+  const stats = {
+    saines:           colliers.filter(v => v.etat_sante === 'Saine').length,
+    boiteriesLegeres: colliers.filter(v => v.etat_sante === 'Boiterie_Legere').length,
+    boiteries:        colliers.filter(v => v.etat_sante === 'Boiterie_Severe').length,
+    urgences:         colliers.filter(v => v.etat_sante === 'Chute').length,
+    chaleurs:         colliers.filter(v => v.etat_sante === 'En chaleur').length,
+  };
 
   const vachesUrgence  = colliers.filter(v => v.etat_sante === 'Chute');
   const alertesRecentes = colliers.filter(v => v.etat_sante !== 'Saine').slice(0, 3);
@@ -264,22 +291,48 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {/* ── Bannière d'urgence ── */}
-        {vachesUrgence.length > 0 && (
-          <View style={styles.banniereUrgence}>
-            <View style={styles.banniereUrgenceGauche}>
-              <Text style={styles.banniereUrgenceTitre}>
-                ⚠️ Urgence vitale : Vache {vachesUrgence[0].id_vache} immobilisée
+        {/* ── Dernière analyse IA ── */}
+        <View style={styles.derniereActu}>
+          <Ionicons name="time-outline" size={14} color="#666" />
+          <Text style={styles.derniereActuTexte}>
+            {derniereActu
+              ? `Dernière analyse IA : ${new Intl.DateTimeFormat('fr-FR', {
+                  day: '2-digit', month: '2-digit',
+                  hour: '2-digit', minute: '2-digit',
+                }).format(derniereActu)}`
+              : 'Aucune analyse IA effectuée'}
+          </Text>
+        </View>
+
+        {/* ── Bannières d'urgence ── */}
+        {vachesUrgence.map(vache => (
+          <TouchableOpacity
+            key={vache.id}
+            style={styles.banniereUrgence}
+            onPress={() => allerSurCarte(vache)}
+            activeOpacity={0.85}
+          >
+            <View style={styles.banniereUrgenceHeader}>
+              <Ionicons name="warning" size={20} color="#FFD700" />
+              <Text style={styles.banniereUrgenceTexte}>
+                🚨 Urgence vitale : Vache {vache.id_vache} immobilisée
               </Text>
-              <Text style={styles.banniereUrgenceFiabilite}>Fiabilité IA : 92%</Text>
             </View>
-            <TouchableOpacity
-              style={styles.boutonVoirCarte}
-              onPress={() => allerSurCarte(vachesUrgence[0])}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.boutonVoirCarteTexte}>📍 VOIR SUR LA CARTE</Text>
-            </TouchableOpacity>
+            <Text style={styles.banniereUrgenceSous}>
+              Fiabilité IA : {vache.fiabilite_ia != null
+                ? Math.round(vache.fiabilite_ia > 1 ? vache.fiabilite_ia : vache.fiabilite_ia * 100) + '%'
+                : 'N/A'}
+            </Text>
+            <View style={styles.banniereUrgenceBouton}>
+              <Text style={styles.banniereUrgenceBoutonTexte}>📍 VOIR SUR LA CARTE</Text>
+            </View>
+          </TouchableOpacity>
+        ))}
+        {vachesUrgence.length > 3 && (
+          <View style={styles.banniereResume}>
+            <Text style={styles.banniereResumeTexte}>
+              ⚠️ {vachesUrgence.length} vaches en urgence au total
+            </Text>
           </View>
         )}
 
@@ -378,14 +431,17 @@ export default function HomeScreen() {
               <View style={styles.miniCarteContainer}>
                 <MapView
                   style={styles.miniCarte}
-                  provider={PROVIDER_GOOGLE}
+                  provider={PROVIDER_CARTE}
                   initialRegion={regionCarte}
-                  mapType="satellite"
+                  mapType="standard"
                   scrollEnabled={false}
                   zoomEnabled={false}
                   pitchEnabled={false}
                   rotateEnabled={false}
                   pointerEvents="none"
+                  loadingEnabled={true}
+                  loadingIndicatorColor="#2D5016"
+                  loadingBackgroundColor="#F5F0E8"
                 >
                   {colliers
                     .filter(v => v.latitude && v.longitude)
@@ -524,34 +580,61 @@ const styles = StyleSheet.create({
     backgroundColor: COULEURS.ROUGE_URGENCE,
     borderRadius: 12,
     padding: 16,
-    marginBottom: 16,
+    marginBottom: 12,
+  },
+  banniereUrgenceHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
+    marginBottom: 6,
   },
-  banniereUrgenceGauche: { flex: 1 },
-  banniereUrgenceTitre: {
+  banniereUrgenceTexte: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
-    marginBottom: 4,
+    flex: 1,
   },
-  banniereUrgenceFiabilite: {
+  banniereUrgenceSous: {
     color: 'rgba(255,255,255,0.8)',
     fontSize: 13,
+    marginBottom: 10,
   },
-  boutonVoirCarte: {
+  banniereUrgenceBouton: {
     backgroundColor: 'rgba(0,0,0,0.25)',
     borderRadius: 8,
     paddingVertical: 10,
-    paddingHorizontal: 12,
     alignItems: 'center',
   },
-  boutonVoirCarteTexte: {
+  banniereUrgenceBoutonTexte: {
     color: '#FFFFFF',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '800',
-    textAlign: 'center',
+  },
+  banniereResume: {
+    backgroundColor: '#FF6B6B',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+    alignItems: 'center',
+  },
+  banniereResumeTexte: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  // Dernière actualisation IA
+  derniereActu: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 4,
+    marginBottom: 8,
+  },
+  derniereActuTexte: {
+    fontSize: 12,
+    color: '#666666',
+    fontStyle: 'italic',
   },
 
   // Erreur

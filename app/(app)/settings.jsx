@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, ScrollView, Image,
+  View, Text, TouchableOpacity, StyleSheet, ScrollView, FlatList, Image,
   ActivityIndicator, Modal, TextInput, Switch, Linking,
   Alert, KeyboardAvoidingView, Platform, StatusBar,
 } from 'react-native';
-import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../../lib/supabase';
 import { COULEURS } from '../../constants/couleurs';
 import { useConnexion } from '../../services/connexion';
@@ -23,7 +23,6 @@ export default function SettingsScreen() {
 
   // Modal collier
   const [modalCollier, setModalCollier]     = useState(false);
-  const [scanActif, setScanActif]           = useState(false);
   const [idVache, setIdVache]               = useState('');
   const [idCapteur, setIdCapteur]           = useState('');
   const [nomVache, setNomVache]             = useState('');
@@ -33,8 +32,6 @@ export default function SettingsScreen() {
   const [modalVeto, setModalVeto]           = useState(false);
   const [vetoForm, setVetoForm]             = useState({ nom: '', prenom: '', telephone: '', adresse: '' });
   const [sauvegardeVeto, setSauvegardeVeto] = useState(false);
-
-  const [permission, requestPermission] = useCameraPermissions();
 
   const chargerDonnees = useCallback(async () => {
     try {
@@ -77,8 +74,16 @@ export default function SettingsScreen() {
           text: 'Se déconnecter',
           style: 'destructive',
           onPress: async () => {
-            await supabase.auth.signOut();
-            router.replace('/(auth)/login');
+            try {
+              const keys = await AsyncStorage.getAllKeys();
+              const aSupprimer = keys.filter(k => k.includes('bovisense') || k.includes('supabase'));
+              if (aSupprimer.length > 0) { await AsyncStorage.multiRemove(aSupprimer); }
+              await supabase.auth.signOut();
+              router.replace('/(auth)/login');
+            } catch (e) {
+              console.log('Erreur déconnexion:', e);
+              router.replace('/(auth)/login');
+            }
           },
         },
       ]
@@ -151,23 +156,6 @@ export default function SettingsScreen() {
     } finally {
       setEnregistrement(false);
     }
-  };
-
-  const ouvrirScanner = async () => {
-    if (!permission?.granted) {
-      const { granted } = await requestPermission();
-      if (!granted) {
-        Alert.alert('Permission refusée', 'BoviSense a besoin de la caméra pour scanner les QR codes.');
-        return;
-      }
-    }
-    setScanActif(true);
-  };
-
-  const onQRScan = ({ data }) => {
-    setScanActif(false);
-    setIdCapteur(data);
-    Alert.alert('QR scanné ✅', `Capteur détecté : ${data}`);
   };
 
   const sauvegarderVeto = async () => {
@@ -322,7 +310,7 @@ export default function SettingsScreen() {
           {/* RGPD */}
           <TouchableOpacity
             style={styles.listeItem}
-            onPress={() => Alert.alert('Politique de confidentialité', 'Vos données sont traitées de manière sécurisée conformément au RGPD (Règlement Général sur la Protection des Données).')}
+            onPress={() => router.push('/(app)/rgpd')}
             activeOpacity={0.7}
           >
             <View style={[styles.listeIconeContainer, { backgroundColor: '#8E8E93' }]}>
@@ -341,34 +329,37 @@ export default function SettingsScreen() {
             <Text style={styles.troupeauSousTitre}>
               Masque les vaches à l'étable de la carte et de l'analyse IA.
             </Text>
-            <ScrollView
+            <FlatList
+              data={troupeau}
+              keyExtractor={item => item.id.toString()}
               style={styles.troupeauListe}
               scrollEnabled={true}
-              showsVerticalScrollIndicator={false}
               nestedScrollEnabled={true}
-            >
-              {troupeau.map((vache, index) => (
-                <View key={vache.id}>
-                  <View style={styles.troupeauLigne}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.troupeauVacheId}>
-                        {vache.id_vache}{vache.nom_vache ? ` — ${vache.nom_vache}` : ''}
-                      </Text>
-                      <Text style={[styles.troupeauVacheEtat, { color: vache.en_paturage === false ? COULEURS.TEXTE_SECONDAIRE : COULEURS.VERT_PRINCIPAL }]}>
-                        {vache.en_paturage === false ? '🏠 À l\'étable' : '🌿 En pâturage'}
-                      </Text>
-                    </View>
-                    <Switch
-                      value={vache.en_paturage !== false}
-                      onValueChange={v => basculerPaturage(vache.id, v)}
-                      trackColor={{ false: COULEURS.SEPARATEUR, true: COULEURS.VERT_PRINCIPAL }}
-                      thumbColor="#FFFFFF"
-                    />
+              showsVerticalScrollIndicator={false}
+              getItemLayout={(data, index) => ({ length: 53, offset: 53 * index, index })}
+              maxToRenderPerBatch={10}
+              windowSize={5}
+              removeClippedSubviews={true}
+              ItemSeparatorComponent={() => <View style={styles.troupeauSep} />}
+              renderItem={({ item: vache }) => (
+                <View style={styles.troupeauLigne}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.troupeauVacheId}>
+                      {vache.id_vache}{vache.nom_vache ? ` — ${vache.nom_vache}` : ''}
+                    </Text>
+                    <Text style={[styles.troupeauVacheEtat, { color: vache.en_paturage === false ? COULEURS.TEXTE_SECONDAIRE : COULEURS.VERT_PRINCIPAL }]}>
+                      {vache.en_paturage === false ? '🏠 À l\'étable' : '🌿 En pâturage'}
+                    </Text>
                   </View>
-                  {index < troupeau.length - 1 && <View style={styles.troupeauSep} />}
+                  <Switch
+                    value={vache.en_paturage !== false}
+                    onValueChange={v => basculerPaturage(vache.id, v)}
+                    trackColor={{ false: COULEURS.SEPARATEUR, true: COULEURS.VERT_PRINCIPAL }}
+                    thumbColor="#FFFFFF"
+                  />
                 </View>
-              ))}
-            </ScrollView>
+              )}
+            />
             <View style={styles.troupeauBulkRow}>
               <TouchableOpacity style={styles.troupeauBoutonPaturage} onPress={toutMettreEnPaturage} activeOpacity={0.8}>
                 <Text style={styles.troupeauBoutonPaturageTexte}>🌿 Tout en pâturage</Text>
@@ -406,101 +397,86 @@ export default function SettingsScreen() {
             <View style={styles.modalHandle} />
 
             <View style={styles.modalHeaderRow}>
-              <TouchableOpacity onPress={() => { setModalCollier(false); setScanActif(false); }} style={styles.modalRetour}>
+              <TouchableOpacity onPress={() => setModalCollier(false)} style={styles.modalRetour}>
                 <Ionicons name="arrow-back" size={22} color={COULEURS.VERT_PRINCIPAL} />
               </TouchableOpacity>
               <Text style={styles.modalTitre}>NOUVEAU CAPTEUR</Text>
               <View style={{ width: 32 }} />
             </View>
 
-            {scanActif ? (
-              <View style={styles.scannerContainer}>
-                <CameraView
-                  style={styles.camera}
-                  facing="back"
-                  onBarcodeScanned={onQRScan}
-                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <View style={styles.modalLogoContainer}>
+                <Image
+                  source={require('../../assets/logo_bovi_sense_clair.png')}
+                  style={{ width: 64, height: 64 }}
+                  resizeMode="contain"
                 />
-                <TouchableOpacity
-                  style={styles.boutonAnnulerScan}
-                  onPress={() => setScanActif(false)}
-                >
-                  <Text style={{ color: '#FFF', fontWeight: '700' }}>Annuler le scan</Text>
-                </TouchableOpacity>
+                <Text style={styles.modalSousTitre}>
+                  Associez un nouveau podomètre à une bête de votre troupeau.
+                </Text>
               </View>
-            ) : (
-              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-                <View style={styles.modalLogoContainer}>
-                  <Image
-                    source={require('../../assets/logo_bovi_sense_clair.png')}
-                    style={{ width: 64, height: 64 }}
-                    resizeMode="contain"
-                  />
-                  <Text style={styles.modalSousTitre}>
-                    Associez un nouveau podomètre à une bête de votre troupeau.
-                  </Text>
-                </View>
 
-                <Text style={styles.champLabel}>Sélectionner la vache</Text>
-                <View style={styles.champAvecIcone}>
-                  <Text style={styles.champIconeEmoji}>🐄</Text>
-                  <TextInput
-                    style={styles.champInputInline}
-                    value={idVache}
-                    onChangeText={setIdVache}
-                    placeholder="ex: V-120"
-                    placeholderTextColor={COULEURS.TEXTE_SECONDAIRE}
-                    autoCapitalize="characters"
-                  />
-                </View>
-
-                <Text style={styles.champLabel}>Nom de la vache</Text>
+              <Text style={styles.champLabel}>Sélectionner la vache</Text>
+              <View style={styles.champAvecIcone}>
+                <Text style={styles.champIconeEmoji}>🐄</Text>
                 <TextInput
-                  style={styles.champInput}
-                  value={nomVache}
-                  onChangeText={setNomVache}
-                  placeholder="ex: Marguerite"
+                  style={styles.champInputInline}
+                  value={idVache}
+                  onChangeText={setIdVache}
+                  placeholder="ex: V-120"
                   placeholderTextColor={COULEURS.TEXTE_SECONDAIRE}
-                  autoCapitalize="words"
+                  autoCapitalize="characters"
                 />
+              </View>
 
-                <Text style={styles.champLabel}>ID du capteur (S/N)</Text>
-                <View style={styles.champAvecIcone}>
-                  <Ionicons name="barcode-outline" size={18} color={COULEURS.TEXTE_SECONDAIRE} style={{ marginRight: 8 }} />
-                  <TextInput
-                    style={styles.champInputInline}
-                    value={idCapteur}
-                    onChangeText={setIdCapteur}
-                    placeholder="Entrer l'ID"
-                    placeholderTextColor={COULEURS.TEXTE_SECONDAIRE}
-                  />
-                </View>
+              <Text style={styles.champLabel}>Nom de la vache</Text>
+              <TextInput
+                style={styles.champInput}
+                value={nomVache}
+                onChangeText={setNomVache}
+                placeholder="ex: Marguerite"
+                placeholderTextColor={COULEURS.TEXTE_SECONDAIRE}
+                autoCapitalize="words"
+              />
 
-                <TouchableOpacity style={styles.boutonQR} onPress={ouvrirScanner}>
-                  <Ionicons name="qr-code-outline" size={20} color={COULEURS.TEXTE_PRINCIPAL} />
-                  <Text style={styles.boutonQRTexte}>Scanner le QR Code du collier</Text>
-                </TouchableOpacity>
+              <Text style={styles.champLabel}>ID du capteur (S/N)</Text>
+              <View style={styles.champAvecIcone}>
+                <Ionicons name="barcode-outline" size={18} color={COULEURS.TEXTE_SECONDAIRE} style={{ marginRight: 8 }} />
+                <TextInput
+                  style={styles.champInputInline}
+                  value={idCapteur}
+                  onChangeText={setIdCapteur}
+                  placeholder="Entrer l'ID"
+                  placeholderTextColor={COULEURS.TEXTE_SECONDAIRE}
+                />
+              </View>
 
-                <TouchableOpacity
-                  style={[styles.boutonPrincipal, enregistrement && styles.boutonDesactive]}
-                  onPress={associerCollier}
-                  disabled={enregistrement}
-                  activeOpacity={0.85}
-                >
-                  {enregistrement
-                    ? <ActivityIndicator color="#FFF" />
-                    : <Text style={styles.boutonTexte}>🔗 Associer le capteur</Text>
-                  }
-                </TouchableOpacity>
+              <View style={styles.infoScanner}>
+                <Ionicons name="information-circle-outline" size={16} color="#666" />
+                <Text style={styles.infoScannerTexte}>
+                  Entrez l'ID manuellement ou scannez avec l'app caméra de votre téléphone
+                </Text>
+              </View>
 
-                <TouchableOpacity
-                  style={styles.boutonAnnuler}
-                  onPress={() => { setModalCollier(false); setScanActif(false); }}
-                >
-                  <Text style={styles.boutonAnnulerTexte}>Annuler</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            )}
+              <TouchableOpacity
+                style={[styles.boutonPrincipal, enregistrement && styles.boutonDesactive]}
+                onPress={associerCollier}
+                disabled={enregistrement}
+                activeOpacity={0.85}
+              >
+                {enregistrement
+                  ? <ActivityIndicator color="#FFF" />
+                  : <Text style={styles.boutonTexte}>🔗 Associer le capteur</Text>
+                }
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.boutonAnnuler}
+                onPress={() => setModalCollier(false)}
+              >
+                <Text style={styles.boutonAnnulerTexte}>Annuler</Text>
+              </TouchableOpacity>
+            </ScrollView>
           </KeyboardAvoidingView>
         </View>
       </Modal>
@@ -759,20 +735,18 @@ const styles = StyleSheet.create({
   champIconeEmoji:  { fontSize: 18, marginRight: 8 },
   champInputInline: { flex: 1, fontSize: 15, color: COULEURS.TEXTE_PRINCIPAL, paddingVertical: 14 },
 
-  boutonQR: {
+  infoScanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: COULEURS.SEPARATEUR,
+    gap: 8,
+    backgroundColor: '#F0F0F0',
     borderRadius: 8,
-    height: 52,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
     marginTop: 12,
     marginBottom: 8,
-    gap: 8,
-    backgroundColor: COULEURS.FOND_INPUT,
   },
-  boutonQRTexte: { color: COULEURS.TEXTE_PRINCIPAL, fontSize: 15, fontWeight: '600' },
+  infoScannerTexte: { flex: 1, fontSize: 13, color: '#666', lineHeight: 18 },
 
   boutonPrincipal: {
     backgroundColor: COULEURS.VERT_PRINCIPAL,
@@ -792,18 +766,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   boutonAnnulerTexte: { color: COULEURS.TEXTE_SECONDAIRE, fontSize: 15 },
-
-  scannerContainer: { borderRadius: 12, overflow: 'hidden', height: 300 },
-  camera:           { flex: 1 },
-  boutonAnnulerScan: {
-    backgroundColor: COULEURS.ROUGE_URGENCE,
-    padding: 14,
-    alignItems: 'center',
-    borderRadius: 8,
-    marginTop: 12,
-    height: 52,
-    justifyContent: 'center',
-  },
 
   // Gestion du troupeau
   troupeauSection: {

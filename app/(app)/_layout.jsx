@@ -91,6 +91,7 @@ export default function AppLayout() {
           ),
         }}
       />
+      <Tabs.Screen name="rgpd" options={{ href: null }} />
     </Tabs>
   );
 }

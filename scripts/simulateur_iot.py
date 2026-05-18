@@ -12,7 +12,23 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 
-def generer_donnees_vache(id_vache, etat_force=None):
+def obtenir_temp_ext():
+    """Fetch la température extérieure réelle depuis Open-Meteo"""
+    try:
+        r = requests.get(
+            "https://api.open-meteo.com/v1/forecast"
+            "?latitude=48.0712&longitude=-1.6325"
+            "&current=temperature_2m&timezone=Europe/Paris",
+            timeout=5
+        )
+        if r.status_code == 200:
+            return round(r.json()["current"]["temperature_2m"], 1)
+    except Exception as e:
+        print(f"Avertissement météo : {e}")
+    return 15.0
+
+
+def generer_donnees_vache(id_vache, temp_ext_base=None, etat_force=None):
     """Génère des données IoT réalistes selon un état aléatoire"""
     heure = datetime.now().hour
     est_nuit = heure >= 22 or heure < 6
@@ -27,9 +43,12 @@ def generer_donnees_vache(id_vache, etat_force=None):
         etat = etat_force
 
     base_temp = random.gauss(38.6, 0.2)
-    temp_ext = random.gauss(15.0, 5.0)
-    if est_nuit:
-        temp_ext -= 4.0
+    if temp_ext_base is not None:
+        temp_ext = temp_ext_base + random.uniform(-0.5, 0.5)
+    else:
+        temp_ext = random.gauss(15.0, 5.0)
+        if est_nuit:
+            temp_ext -= 4.0
 
     if etat == 'Normale':
         pas = max(0, int(random.gauss(100 if est_nuit else 600, 50 if est_nuit else 150)))
@@ -149,9 +168,12 @@ def simuler_toutes_vaches():
     vaches = r.json()
     print(f"🐄 {len(vaches)} vaches à analyser...")
 
+    temp_ext_base = obtenir_temp_ext()
+    print(f"🌡️ Température extérieure : {temp_ext_base}°C")
+
     for vache in vaches:
         id_vache = vache["id_vache"]
-        donnees = generer_donnees_vache(id_vache)
+        donnees = generer_donnees_vache(id_vache, temp_ext_base=temp_ext_base)
 
         resultat = analyser_vache(donnees)
 

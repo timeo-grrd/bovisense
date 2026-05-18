@@ -9,15 +9,27 @@ const normaliserEtat = (etat) => {
 const AZURE_API_URL =
   'https://bovisens-gzguhzapdug4arc6.francecentral-01.azurewebsites.net/api/predict';
 
+const obtenirTempExt = async () => {
+  try {
+    const r = await fetch(
+      'https://api.open-meteo.com/v1/forecast?latitude=48.0712&longitude=-1.6325&current=temperature_2m&timezone=Europe/Paris'
+    );
+    const d = await r.json();
+    return Math.round(d.current.temperature_2m * 10) / 10;
+  } catch {
+    return 15.0;
+  }
+};
+
 // Analyse un seul animal et retourne son état de santé prédit
-export async function analyserVache(vache) {
+export async function analyserVache(vache, tempExt) {
   const payload = {
     ID_Vache:    vache.id_vache,
     Heure:       new Date().getHours(),
     Pas_2h:      vache.pas_2h,
     Repos_min_2h:vache.repos_min_2h,
     Temp_Corp_C: vache.temp_corp_c,
-    Temp_Ext_C:  vache.temp_ext_c,
+    Temp_Ext_C:  tempExt ?? vache.temp_ext_c,
     Lat:         vache.latitude,
     Lng:         vache.longitude,
   };
@@ -42,10 +54,11 @@ export async function analyserVache(vache) {
 // Analyse tout le troupeau, met à jour Supabase et enregistre l'historique
 export async function analyserTroupeau(colliers) {
   const resultats = [];
+  const tempExt = await obtenirTempExt();
 
   for (const vache of colliers) {
     try {
-      const { etat_sante, fiabilite } = await analyserVache(vache);
+      const { etat_sante, fiabilite } = await analyserVache(vache, tempExt);
 
       const { error } = await supabase
         .from('colliers')

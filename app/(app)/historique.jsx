@@ -101,23 +101,89 @@ const FILTRES = [
   { id: 'Fausses',    label: '🔧 Fausses alertes' },
 ];
 
+// ─── Carte diagnostic réutilisable ───────────────────────────────
+function CarteItem({ item, idVache, nomVache, showVache = false, tagMedical = false }) {
+  const couleur = getCouleurEtat(item.etat_sante);
+  return (
+    <View style={styles.carte}>
+      <View style={[styles.bandeLaterale, { backgroundColor: couleur }]} />
+      <View style={styles.carteContenu}>
+        {showVache && (
+          <Text style={styles.carteVache}>
+            {idVache}{nomVache ? ` — ${nomVache}` : ''}
+          </Text>
+        )}
+        <Text style={styles.carteDate}>{formaterDateComplete(item.date_diagnostic)}</Text>
+        <View style={styles.carteLigne}>
+          <View style={[styles.badge, { backgroundColor: couleur }]}>
+            <Text style={styles.badgeTexte}>{libelleEtat(item.etat_sante)}</Text>
+          </View>
+          {item.confirme && <Text style={styles.confirmeTag}>✅ Confirmée</Text>}
+          {tagMedical && !item.confirme && <Text style={styles.archiveTag}>Archive</Text>}
+          {item.fiabilite_ia != null && (
+            <Text style={styles.carteFiabilite}>
+              {Math.round(item.fiabilite_ia > 1 ? item.fiabilite_ia : item.fiabilite_ia * 100)}%
+            </Text>
+          )}
+        </View>
+        <Text style={styles.carteCapteurs}>
+          {'👟'} {item.pas_2h != null ? Math.round(item.pas_2h) : '—'} pas
+          {'  🛏️'} {item.repos_min_2h != null ? Math.round(item.repos_min_2h) : '—'} min
+          {'  🌡️'} {item.temp_corp_c != null ? Number(item.temp_corp_c).toFixed(1) : '—'}°C corp
+          {'  ☀️'} {item.temp_ext_c != null ? Number(item.temp_ext_c).toFixed(1) : '—'}°C ext
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 // ─── Écran principal ──────────────────────────────────────────────
 export default function HistoriqueScreen() {
   const { id, nom } = useLocalSearchParams();
-  const modeGlobal  = !id;
 
-  const [historique,     setHistorique]     = useState([]);
-  const [chargement,     setChargement]     = useState(true);
-  const [erreur,         setErreur]         = useState(null);
-  const [filtreActif,    setFiltreActif]    = useState('Tout');
-  const [triDecroissant, setTriDecroissant] = useState(true);
+  const [mode, setMode]                           = useState(id ? 'vache' : 'troupeau');
+  const [historique, setHistorique]               = useState([]);
+  const [historiqueRecent, setHistoriqueRecent]   = useState([]);
+  const [historiqueMedical, setHistoriqueMedical] = useState([]);
+  const [vachesDisponibles, setVachesDisponibles] = useState([]);
+  const [vacheChoisie, setVacheChoisie]           = useState(null);
+  const [chargement, setChargement]               = useState(true);
+  const [erreur, setErreur]                       = useState(null);
+  const [filtreActif, setFiltreActif]             = useState('Tout');
+  const [triDecroissant, setTriDecroissant]       = useState(true);
+
+  useEffect(() => {
+    if (id) setMode('vache');
+  }, [id]);
+
+  const chargerVachesDisponibles = useCallback(async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase
+        .from('colliers')
+        .select('id, id_vache, nom_vache, etat_sante')
+        .eq('user_id', user.id)
+        .order('id_vache');
+      const vaches = data ?? [];
+      setVachesDisponibles(vaches);
+      if (id) {
+        const cible = vaches.find(v => String(v.id) === String(id));
+        if (cible) setVacheChoisie(cible);
+      }
+    } catch {
+      // non-bloquant
+    }
+  }, [id]);
+
+  useEffect(() => { chargerVachesDisponibles(); }, [chargerVachesDisponibles]);
 
   const chargerHistorique = useCallback(async () => {
     try {
       setErreur(null);
       setChargement(true);
 
-      if (modeGlobal) {
+      if (mode === 'troupeau') {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) return;
 
@@ -140,31 +206,48 @@ export default function HistoriqueScreen() {
 
         if (error) throw error;
         setHistorique(data ?? []);
+      } else if (mode === 'vache' && vacheChoisie) {
+        const limite7j = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+        const [
+          { data: recents, error: err1 },
+          { data: medical, error: err2 },
+        ] = await Promise.all([
+          supabase
+            .from('historique_sante')
+            .select('*')
+            .eq('collier_id', vacheChoisie.id)
+            .gte('date_diagnostic', limite7j)
+            .order('date_diagnostic', { ascending: false }),
+          supabase
+            .from('historique_sante')
+            .select('*')
+            .eq('collier_id', vacheChoisie.id)
+            .or('confirme.eq.true,etat_sante.in.(Chute,Boiterie_Severe)')
+            .lt('date_diagnostic', limite7j)
+            .order('date_diagnostic', { ascending: false })
+            .limit(50),
+        ]);
+
+        if (err1) throw err1;
+        if (err2) throw err2;
+        setHistoriqueRecent(recents ?? []);
+        setHistoriqueMedical(medical ?? []);
+        setHistorique([]);
       } else {
-        const limite = new Date();
-        limite.setDate(limite.getDate() - 15);
-
-        const { data, error } = await supabase
-          .from('historique_sante')
-          .select('*')
-          .eq('collier_id', id)
-          .gte('date_diagnostic', limite.toISOString())
-          .order('date_diagnostic', { ascending: false })
-          .limit(30);
-
-        if (error) throw error;
-        setHistorique(data ?? []);
+        setHistorique([]);
+        setHistoriqueRecent([]);
+        setHistoriqueMedical([]);
       }
     } catch {
       setErreur('Impossible de charger l\'historique.');
     } finally {
       setChargement(false);
     }
-  }, [id, modeGlobal]);
+  }, [mode, vacheChoisie]);
 
   useEffect(() => { chargerHistorique(); }, [chargerHistorique]);
 
-  // ── Filtrage + tri client-side ──
   const historiqueFiltre = historique
     .filter(item => {
       switch (filtreActif) {
@@ -181,15 +264,13 @@ export default function HistoriqueScreen() {
       return triDecroissant ? diff : -diff;
     });
 
-  const graphData = modeGlobal ? computeGraphData(historique) : null;
+  const graphData = mode === 'troupeau' ? computeGraphData(historique) : null;
 
-  const titre = modeGlobal
-    ? 'Historique du troupeau'
-    : `Historique — ${nom || id}`;
-
-  const sousTitre = modeGlobal
+  const sousTitre = mode === 'troupeau'
     ? `${historiqueFiltre.length} entrée${historiqueFiltre.length !== 1 ? 's' : ''} affichée${historiqueFiltre.length !== 1 ? 's' : ''}`
-    : `15 derniers jours · ${historique.length} diagnostic${historique.length !== 1 ? 's' : ''}`;
+    : vacheChoisie
+      ? `${vacheChoisie.id_vache}${vacheChoisie.nom_vache ? ` — ${vacheChoisie.nom_vache}` : ''}`
+      : 'Sélectionnez une vache';
 
   return (
     <View style={styles.fond}>
@@ -200,8 +281,30 @@ export default function HistoriqueScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.retour}>
           <Ionicons name="arrow-back" size={22} color={COULEURS.VERT_PRINCIPAL} />
         </TouchableOpacity>
-        <Text style={styles.headerTitre} numberOfLines={1}>{titre}</Text>
+        <Text style={styles.headerTitre} numberOfLines={1}>Historique</Text>
         <View style={{ width: 40 }} />
+      </View>
+
+      {/* ── Toggle ── */}
+      <View style={styles.toggleContainer}>
+        <TouchableOpacity
+          style={[styles.toggleBtn, mode === 'troupeau' && styles.toggleActif]}
+          onPress={() => setMode('troupeau')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.toggleTexte, mode === 'troupeau' && styles.toggleTexteActif]}>
+            🐄 Troupeau
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.toggleBtn, mode === 'vache' && styles.toggleActif]}
+          onPress={() => setMode('vache')}
+          activeOpacity={0.8}
+        >
+          <Text style={[styles.toggleTexte, mode === 'vache' && styles.toggleTexteActif]}>
+            📋 Par vache
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {chargement ? (
@@ -224,96 +327,122 @@ export default function HistoriqueScreen() {
         >
           <Text style={styles.sousTitre}>{sousTitre}</Text>
 
-          {/* ── Graphique 7 jours (mode global) ── */}
-          {modeGlobal && graphData && <GraphiqueSemaine data={graphData} />}
-
-          {/* ── Chips filtres + bouton tri (mode global) ── */}
-          {modeGlobal && (
-            <View style={styles.filtresRow}>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.chipsList}
-              >
-                {FILTRES.map(f => (
-                  <TouchableOpacity
-                    key={f.id}
-                    style={[styles.chip, filtreActif === f.id && styles.chipActif]}
-                    onPress={() => setFiltreActif(f.id)}
-                    activeOpacity={0.75}
-                  >
-                    <Text style={[styles.chipTexte, filtreActif === f.id && styles.chipTexteActif]}>
-                      {f.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-              <TouchableOpacity
-                style={styles.boutonTri}
-                onPress={() => setTriDecroissant(v => !v)}
-                activeOpacity={0.7}
-              >
-                <Ionicons
-                  name={triDecroissant ? 'arrow-down' : 'arrow-up'}
-                  size={14}
-                  color={COULEURS.VERT_PRINCIPAL}
-                />
-                <Text style={styles.boutonTriTexte}>
-                  {triDecroissant ? 'Récent' : 'Ancien'}
-                </Text>
-              </TouchableOpacity>
-            </View>
+          {/* ── Mode troupeau ── */}
+          {mode === 'troupeau' && (
+            <>
+              {graphData && <GraphiqueSemaine data={graphData} />}
+              <View style={styles.filtresRow}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.chipsList}
+                >
+                  {FILTRES.map(f => (
+                    <TouchableOpacity
+                      key={f.id}
+                      style={[styles.chip, filtreActif === f.id && styles.chipActif]}
+                      onPress={() => setFiltreActif(f.id)}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={[styles.chipTexte, filtreActif === f.id && styles.chipTexteActif]}>
+                        {f.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+                <TouchableOpacity
+                  style={styles.boutonTri}
+                  onPress={() => setTriDecroissant(v => !v)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name={triDecroissant ? 'arrow-down' : 'arrow-up'}
+                    size={14}
+                    color={COULEURS.VERT_PRINCIPAL}
+                  />
+                  <Text style={styles.boutonTriTexte}>
+                    {triDecroissant ? 'Récent' : 'Ancien'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </>
           )}
 
-          {/* ── Liste ── */}
-          {historiqueFiltre.length === 0 ? (
+          {/* ── Mode par vache — sélecteur ── */}
+          {mode === 'vache' && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.listeVaches}
+              contentContainerStyle={styles.listeVachesContenu}
+            >
+              {vachesDisponibles.map(v => (
+                <TouchableOpacity
+                  key={v.id}
+                  style={[styles.chipVache, vacheChoisie?.id === v.id && styles.chipVacheActif]}
+                  onPress={() => setVacheChoisie(v)}
+                  activeOpacity={0.75}
+                >
+                  <Text style={[styles.chipVacheTexte, vacheChoisie?.id === v.id && styles.chipVacheTexteActif]}>
+                    {v.id_vache}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+
+          {/* ── Liste diagnostics ── */}
+          {mode === 'vache' && !vacheChoisie ? (
+            <View style={styles.vide}>
+              <Text style={{ fontSize: 36, marginBottom: 12 }}>📋</Text>
+              <Text style={styles.videTexte}>Sélectionnez une vache pour voir son historique.</Text>
+            </View>
+          ) : mode === 'vache' && vacheChoisie ? (
+            <>
+              {/* Section 7 derniers jours */}
+              <Text style={styles.sectionLabel}>📊 7 derniers jours</Text>
+              {historiqueRecent.length === 0 ? (
+                <View style={styles.videSection}>
+                  <Text style={styles.videTexte}>Aucun diagnostic enregistré cette semaine.</Text>
+                </View>
+              ) : (
+                historiqueRecent.map(item => <CarteItem key={item.id} item={item} />)
+              )}
+
+              {/* Section historique médical */}
+              <Text style={[styles.sectionLabel, { marginTop: 20 }]}>📋 Historique médical</Text>
+              {historiqueMedical.length === 0 ? (
+                <View style={styles.videSection}>
+                  <Text style={styles.videTexte}>Aucun antécédent médical enregistré pour cette vache.</Text>
+                </View>
+              ) : (
+                <>
+                  <View style={styles.avertissementMedical}>
+                    <Ionicons name="warning" size={14} color="#C0392B" />
+                    <Text style={styles.avertissementTexte}>
+                      ⚠️ Cette vache a des antécédents — consulter avant intervention
+                    </Text>
+                  </View>
+                  {historiqueMedical.map(item => (
+                    <CarteItem key={item.id} item={item} tagMedical />
+                  ))}
+                </>
+              )}
+            </>
+          ) : historiqueFiltre.length === 0 ? (
             <View style={styles.vide}>
               <Text style={{ fontSize: 40, marginBottom: 16 }}>📊</Text>
               <Text style={styles.videTexte}>
-                {modeGlobal
-                  ? filtreActif === 'Tout'
-                    ? 'Aucun diagnostic enregistré pour votre troupeau.'
-                    : 'Aucun résultat pour ce filtre.'
-                  : 'Aucun diagnostic enregistré pour cette vache sur les 15 derniers jours.'}
+                {filtreActif === 'Tout'
+                  ? 'Aucun diagnostic enregistré pour votre troupeau.'
+                  : 'Aucun résultat pour ce filtre.'}
               </Text>
             </View>
           ) : (
             historiqueFiltre.map(item => {
-              const couleur  = getCouleurEtat(item.etat_sante);
-              const idVache  = item.colliers?.id_vache ?? (nom || id);
+              const idVache  = item.colliers?.id_vache ?? nom;
               const nomVache = item.colliers?.nom_vache;
-              return (
-                <View key={item.id} style={styles.carte}>
-                  <View style={[styles.bandeLaterale, { backgroundColor: couleur }]} />
-                  <View style={styles.carteContenu}>
-                    {modeGlobal && (
-                      <Text style={styles.carteVache}>
-                        {idVache}{nomVache ? ` — ${nomVache}` : ''}
-                      </Text>
-                    )}
-                    <Text style={styles.carteDate}>{formaterDateComplete(item.date_diagnostic)}</Text>
-                    <View style={styles.carteLigne}>
-                      <View style={[styles.badge, { backgroundColor: couleur }]}>
-                        <Text style={styles.badgeTexte}>{libelleEtat(item.etat_sante)}</Text>
-                      </View>
-                      {item.confirme && (
-                        <Text style={styles.confirmeTag}>✅ Confirmée</Text>
-                      )}
-                      {item.fiabilite_ia != null && (
-                        <Text style={styles.carteFiabilite}>
-                          {Math.round(item.fiabilite_ia > 1 ? item.fiabilite_ia : item.fiabilite_ia * 100)}%
-                        </Text>
-                      )}
-                    </View>
-                    <Text style={styles.carteCapteurs}>
-                      {'👟'} {item.pas_2h != null ? Math.round(item.pas_2h) : '—'} pas
-                      {'  🛏️'} {item.repos_min_2h != null ? Math.round(item.repos_min_2h) : '—'} min
-                      {'  🌡️'} {item.temp_corp_c != null ? Number(item.temp_corp_c).toFixed(1) : '—'}°C corp
-                      {'  ☀️'} {item.temp_ext_c != null ? Number(item.temp_ext_c).toFixed(1) : '—'}°C ext
-                    </Text>
-                  </View>
-                </View>
-              );
+              return <CarteItem key={item.id} item={item} idVache={idVache} nomVache={nomVache} showVache />;
             })
           )}
 
@@ -389,6 +518,27 @@ const styles = StyleSheet.create({
     color:      COULEURS.TEXTE_PRINCIPAL,
   },
 
+  // Toggle
+  toggleContainer: {
+    flexDirection: 'row',
+    backgroundColor: COULEURS.FOND_CARD,
+    borderBottomWidth: 1,
+    borderBottomColor: COULEURS.SEPARATEUR,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  toggleBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    backgroundColor: '#F0F0F0',
+  },
+  toggleActif: { backgroundColor: COULEURS.VERT_PRINCIPAL },
+  toggleTexte: { fontSize: 14, fontWeight: '600', color: '#555555' },
+  toggleTexteActif: { color: '#FFFFFF' },
+
   scroll:        { flex: 1 },
   scrollContenu: { paddingHorizontal: 16, paddingTop: 16 },
 
@@ -399,7 +549,7 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
 
-  // Filtres + tri
+  // Filtres + tri (mode troupeau)
   filtresRow: {
     flexDirection:  'row',
     alignItems:     'center',
@@ -427,6 +577,21 @@ const styles = StyleSheet.create({
     borderRadius:     20,
   },
   boutonTriTexte: { fontSize: 12, color: COULEURS.VERT_PRINCIPAL, fontWeight: '600' },
+
+  // Sélecteur vache (mode par vache)
+  listeVaches:        { marginBottom: 14 },
+  listeVachesContenu: { gap: 8, paddingRight: 4 },
+  chipVache: {
+    backgroundColor:  '#F0F0F0',
+    borderRadius:     20,
+    paddingHorizontal: 16,
+    paddingVertical:  8,
+    borderWidth:      1.5,
+    borderColor:      'transparent',
+  },
+  chipVacheActif:      { backgroundColor: COULEURS.VERT_PRINCIPAL + '20', borderColor: COULEURS.VERT_PRINCIPAL },
+  chipVacheTexte:      { fontSize: 13, fontWeight: '600', color: '#555555' },
+  chipVacheTexteActif: { color: COULEURS.VERT_PRINCIPAL },
 
   // Cartes
   carte: {
@@ -465,6 +630,27 @@ const styles = StyleSheet.create({
   // Vide
   vide:      { alignItems: 'center', paddingVertical: 48 },
   videTexte: { color: COULEURS.TEXTE_SECONDAIRE, fontSize: 15, textAlign: 'center', lineHeight: 24 },
+
+  // Sections vache
+  sectionLabel: {
+    fontSize:     14,
+    fontWeight:   '700',
+    color:        COULEURS.TEXTE_PRINCIPAL,
+    marginBottom: 10,
+    marginTop:    4,
+  },
+  videSection: { paddingVertical: 16, alignItems: 'center' },
+  avertissementMedical: {
+    flexDirection:    'row',
+    alignItems:       'center',
+    backgroundColor:  '#FDECEA',
+    borderRadius:     8,
+    padding:          12,
+    marginBottom:     12,
+    gap:              8,
+  },
+  avertissementTexte: { flex: 1, color: '#C0392B', fontSize: 13, fontWeight: '600' },
+  archiveTag: { fontSize: 11, color: COULEURS.TEXTE_SECONDAIRE, fontWeight: '600', fontStyle: 'italic' },
 
   // Erreur
   erreurTexte:         { color: COULEURS.ROUGE_URGENCE, fontSize: 15, textAlign: 'center', marginBottom: 16 },

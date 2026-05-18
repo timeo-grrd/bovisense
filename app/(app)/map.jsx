@@ -1,13 +1,16 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, memo, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
   Linking, Platform, StatusBar, Switch, Image, Animated, ScrollView, Alert, TextInput,
 } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE, PROVIDER_DEFAULT } from 'react-native-maps';
+
+const PROVIDER_CARTE = Platform.OS === 'android' ? PROVIDER_GOOGLE : PROVIDER_DEFAULT;
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
-import { COULEURS, libelleEtat } from '../../constants/couleurs';
+import { COULEURS } from '../../constants/couleurs';
+import { normaliserEtat, getCouleurEtat, getLabelEtat } from '../../constants/normalisation';
 import { useConnexion } from '../../services/connexion';
 import { sauvegarderVaches, chargerVachesCache, sauvegarderVeterinaire, chargerVeterinaireCache } from '../../services/cache';
 import BanniereHorsLigne from '../../components/BanniereHorsLigne';
@@ -23,28 +26,9 @@ const FILTRES_DISPONIBLES = [
   { cle: 'Saine',           label: 'Saines',             couleur: '#2D5016' },
   { cle: 'Boiterie_Legere', label: 'Boiteries légères',  couleur: '#F4A261' },
   { cle: 'Boiterie_Severe', label: 'Boiteries sévères',  couleur: '#E67E22' },
-  { cle: 'Chaleurs',        label: 'Chaleurs',           couleur: '#E9C46A' },
+  { cle: 'En chaleur',      label: 'En chaleur',         couleur: '#E9C46A' },
   { cle: 'Chute',           label: 'Urgences',           couleur: '#C0392B' },
 ];
-
-const getCouleurMarqueur = (etat) => {
-  if (!etat) return '#999999';
-  const e = etat.trim();
-  if (e === 'Saine' || e === 'Normale') return '#2D5016';
-  if (e === 'Boiterie_Legere' || e === 'Boiterie légère' || e === 'boiterie_legere') return '#F4A261';
-  if (e === 'Boiterie_Severe' || e === 'Boiterie sévère') return '#E67E22';
-  if (e === 'Chaleurs') return '#E9C46A';
-  if (e === 'Chute') return '#C0392B';
-  return '#999999';
-};
-
-const normaliserEtat = (etat) => {
-  if (!etat) return 'Saine';
-  if (etat === 'Normale' || etat === 'Normal' || etat === 'normale') return 'Saine';
-  if (etat === 'Boiterie légère' || etat === 'boiterie_legere') return 'Boiterie_Legere';
-  if (etat === 'Boiterie sévère') return 'Boiterie_Severe';
-  return etat;
-};
 
 export default function MapScreen() {
   const { focusId } = useLocalSearchParams();
@@ -65,6 +49,7 @@ export default function MapScreen() {
   const [legendeOuverte, setLegendeOuverte]       = useState(true);
   const [veterinaire, setVeterinaire]             = useState(null);
   const [recherche, setRecherche]                 = useState('');
+  const [antecedents, setAntecedents]             = useState(0);
 
   const chargerColliers = useCallback(async () => {
     try {
@@ -77,23 +62,23 @@ export default function MapScreen() {
         if (!user) return;
 
         const [{ data, error }, { data: vetDataRaw }] = await Promise.all([
-          supabase.from('colliers').select('*').eq('user_id', user.id),
+          supabase.from('colliers').select('*').eq('user_id', user.id).neq('en_paturage', false),
           supabase.from('veterinaires').select('*').eq('user_id', user.id).maybeSingle(),
         ]);
 
         if (error) throw error;
         donnees = (data ?? [])
-          .filter(v => v.en_paturage !== false)
           .map(v => ({ ...v, etat_sante: normaliserEtat(v.etat_sante) }));
         vetData = vetDataRaw ?? null;
 
         await sauvegarderVaches(donnees);
+        console.log('Cache mis à jour avec', donnees.length, 'vaches');
         if (vetData) await sauvegarderVeterinaire(vetData);
       } else {
         const cacheVaches = await chargerVachesCache();
         const cacheVet    = await chargerVeterinaireCache();
-        if (cacheVaches) donnees = cacheVaches.donnees;
-        if (cacheVet)    vetData  = cacheVet.donnees;
+        if (cacheVaches.vaches.length > 0) donnees = cacheVaches.vaches;
+        if (cacheVet)    vetData  = cacheVet;
       }
 
       setColliers(donnees);
@@ -116,7 +101,7 @@ export default function MapScreen() {
     } catch {
       setErreur('Impossible de charger la position du troupeau.');
       const cacheVaches = await chargerVachesCache();
-      if (cacheVaches) setColliers(cacheVaches.donnees);
+      if (cacheVaches.vaches.length > 0) setColliers(cacheVaches.vaches);
     } finally {
       setChargement(false);
     }
@@ -161,22 +146,25 @@ export default function MapScreen() {
     }
   };
 
-  useEffect(() => {
-    if (!recherche.trim() || !mapRef.current) return;
-    const q = recherche.toLowerCase();
-    const matches = colliers.filter(v =>
-      v.id_vache.toLowerCase().includes(q) ||
-      (v.nom_vache?.toLowerCase().includes(q) ?? false)
-    );
-    if (matches.length === 1 && matches[0].latitude && matches[0].longitude) {
-      mapRef.current.animateToRegion({
-        latitude:      matches[0].latitude,
-        longitude:     matches[0].longitude,
-        latitudeDelta:  0.005,
-        longitudeDelta: 0.005,
-      }, 800);
+  const verifierAntecedents = useCallback(async (vache) => {
+    try {
+      const { count } = await supabase
+        .from('historique_sante')
+        .select('*', { count: 'exact', head: true })
+        .eq('collier_id', vache.id)
+        .or('confirme.eq.true,etat_sante.in.(Chute,Boiterie_Severe)');
+      setAntecedents(count || 0);
+    } catch {
+      setAntecedents(0);
     }
-  }, [recherche, colliers]);
+  }, []);
+
+  useEffect(() => {
+    if (vacheSelectionnee) {
+      setAntecedents(0);
+      verifierAntecedents(vacheSelectionnee);
+    }
+  }, [vacheSelectionnee, verifierAntecedents]);
 
   const confirmerAlerte = async (vache) => {
     if (!estConnecteRef.current) {
@@ -220,16 +208,37 @@ export default function MapScreen() {
     }
   };
 
-  const colliersVisibles = colliers.filter(v => {
+  const colliersVisibles = useMemo(() => colliers.filter(v => {
     const matchFiltre = filtresActifs.includes(v.etat_sante) ||
       (v.etat_sante === 'Boiterie légère' && filtresActifs.includes('Boiterie_Legere')) ||
       !FILTRES_DISPONIBLES.some(f => f.cle === v.etat_sante);
     const q = recherche.toLowerCase();
     const matchRecherche = recherche === '' ||
-      v.id_vache.toLowerCase().includes(q) ||
+      v.id_vache?.toLowerCase().includes(q) ||
       (v.nom_vache?.toLowerCase().includes(q) ?? false);
     return matchFiltre && matchRecherche;
-  });
+  }), [colliers, filtresActifs, recherche]);
+
+  useEffect(() => {
+    if (!recherche.trim() || colliersVisibles.length !== 1) return;
+    const v = colliersVisibles[0];
+    if (v.latitude && v.longitude && mapRef.current) {
+      mapRef.current.animateToRegion({
+        latitude:      v.latitude,
+        longitude:     v.longitude,
+        latitudeDelta:  0.005,
+        longitudeDelta: 0.005,
+      }, 800);
+    }
+  }, [colliersVisibles, recherche]);
+
+  const compteurs = {
+    saines:           colliers.filter(v => v.etat_sante === 'Saine').length,
+    boiteriesLegeres: colliers.filter(v => v.etat_sante === 'Boiterie_Legere').length,
+    boiteriesSeveres: colliers.filter(v => v.etat_sante === 'Boiterie_Severe').length,
+    chaleurs:         colliers.filter(v => v.etat_sante === 'En chaleur').length,
+    urgences:         colliers.filter(v => v.etat_sante === 'Chute').length,
+  };
 
   const panelOuvert = vacheSelectionnee !== null;
 
@@ -251,26 +260,32 @@ export default function MapScreen() {
       <MapView
         ref={mapRef}
         style={styles.carte}
-        provider={PROVIDER_GOOGLE}
+        provider={PROVIDER_CARTE}
         initialRegion={REGION_DEFAUT}
-        mapType="satellite"
+        mapType="standard"
         showsUserLocation
         showsMyLocationButton={false}
+        loadingEnabled={true}
+        loadingIndicatorColor="#2D5016"
+        loadingBackgroundColor="#F5F0E8"
       >
-        {colliersVisibles.map(vache => (
-          <Marker
-            key={vache.id}
-            coordinate={{ latitude: vache.latitude, longitude: vache.longitude }}
-            onPress={() => setVacheSelectionnee(vache)}
-          >
-            <MarqueurVache
-              etat={vache.etat_sante}
-              idVache={vache.id_vache}
-              couleur={getCouleurMarqueur(vache.etat_sante)}
-              selectionne={vacheSelectionnee?.id === vache.id}
-            />
-          </Marker>
-        ))}
+        {colliersVisibles.map(vache => {
+          if (!vache.latitude || !vache.longitude) return null;
+          return (
+            <Marker
+              key={vache.id}
+              coordinate={{ latitude: vache.latitude, longitude: vache.longitude }}
+              onPress={() => setVacheSelectionnee(vache)}
+            >
+              <MarqueurVache
+                etat={vache.etat_sante}
+                idVache={vache.id_vache}
+                couleur={getCouleurEtat(vache.etat_sante)}
+                selectionne={vacheSelectionnee?.id === vache.id}
+              />
+            </Marker>
+          );
+        })}
       </MapView>
 
       <BanniereHorsLigne visible={!estConnecte} />
@@ -322,9 +337,9 @@ export default function MapScreen() {
                 {vacheSelectionnee.nom_vache ? ` — ${vacheSelectionnee.nom_vache}` : ''}
               </Text>
               <View style={styles.panneauInfoEtatRow}>
-                <View style={[styles.pointEtat, { backgroundColor: getCouleurMarqueur(vacheSelectionnee.etat_sante) }]} />
-                <Text style={[styles.panneauInfoEtat, { color: getCouleurMarqueur(vacheSelectionnee.etat_sante) }]}>
-                  {libelleEtat(vacheSelectionnee.etat_sante)}
+                <View style={[styles.pointEtat, { backgroundColor: getCouleurEtat(vacheSelectionnee.etat_sante) }]} />
+                <Text style={[styles.panneauInfoEtat, { color: getCouleurEtat(vacheSelectionnee.etat_sante) }]}>
+                  {getLabelEtat(vacheSelectionnee.etat_sante)}
                 </Text>
               </View>
               <Text style={styles.panneauInfoCoords}>
@@ -334,6 +349,14 @@ export default function MapScreen() {
                 <Text style={styles.panneauInfoFiabilite}>
                   Fiabilité IA : {Math.round(vacheSelectionnee.fiabilite_ia > 1 ? vacheSelectionnee.fiabilite_ia : vacheSelectionnee.fiabilite_ia * 100)}%
                 </Text>
+              )}
+              {antecedents > 0 && (
+                <View style={styles.badgeAntecedents}>
+                  <Ionicons name="medical" size={12} color="#C0392B" />
+                  <Text style={styles.badgeAntecedentsTexte}>
+                    {antecedents} antécédent{antecedents > 1 ? 's' : ''} médical{antecedents > 1 ? 'aux' : ''}
+                  </Text>
+                </View>
               )}
             </View>
             <TouchableOpacity style={styles.boutonFermer} onPress={() => setVacheSelectionnee(null)}>
@@ -434,10 +457,13 @@ export default function MapScreen() {
                   <View style={[styles.filtreDot, { backgroundColor: filtre.couleur }]} />
                   <Text style={styles.filtreLabel}>Afficher {filtre.label}</Text>
                   <Text style={styles.filtreCompte}>
-                    ({colliers.filter(v =>
-                      v.etat_sante === filtre.cle ||
-                      (filtre.cle === 'Boiterie_Legere' && v.etat_sante === 'Boiterie légère')
-                    ).length})
+                    ({
+                      filtre.cle === 'Saine'           ? compteurs.saines :
+                      filtre.cle === 'Boiterie_Legere' ? compteurs.boiteriesLegeres :
+                      filtre.cle === 'Boiterie_Severe' ? compteurs.boiteriesSeveres :
+                      filtre.cle === 'En chaleur'      ? compteurs.chaleurs :
+                      filtre.cle === 'Chute'           ? compteurs.urgences : 0
+                    })
                   </Text>
                   <Switch
                     value={filtresActifs.includes(filtre.cle)}
@@ -458,7 +484,7 @@ export default function MapScreen() {
   );
 }
 
-function MarqueurVache({ etat, idVache, couleur, selectionne }) {
+const MarqueurVache = memo(function MarqueurVache({ etat, idVache, couleur, selectionne }) {
   const estUrgence = etat === 'Chute';
   const taille = selectionne ? 48 : estUrgence ? 42 : 36;
   return (
@@ -497,7 +523,7 @@ function MarqueurVache({ etat, idVache, couleur, selectionne }) {
       )}
     </View>
   );
-}
+});
 
 function DonneeCapteur({ icone, label, valeur }) {
   return (
@@ -572,7 +598,19 @@ const styles = StyleSheet.create({
   panneauInfoEtat:    { fontSize: 14, fontWeight: '600' },
   panneauInfoCoords:    { color: COULEURS.TEXTE_SECONDAIRE, fontSize: 12, marginTop: 4 },
   panneauInfoFiabilite: { color: COULEURS.VERT_PRINCIPAL, fontSize: 12, fontWeight: '600', marginTop: 3 },
-  boutonFermer:       { padding: 2 },
+  badgeAntecedents: {
+    flexDirection:    'row',
+    alignItems:       'center',
+    backgroundColor:  '#FDECEA',
+    borderRadius:     12,
+    paddingHorizontal: 8,
+    paddingVertical:  4,
+    gap:              4,
+    alignSelf:        'flex-start',
+    marginTop:        4,
+  },
+  badgeAntecedentsTexte: { fontSize: 11, color: '#C0392B', fontWeight: '600' },
+  boutonFermer: { padding: 2 },
 
   donneesCapteur: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 14 },
   donnee:         { alignItems: 'center' },
